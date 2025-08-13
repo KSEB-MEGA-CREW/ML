@@ -1,0 +1,1 @@
+# 194차원 feature vector 생성
