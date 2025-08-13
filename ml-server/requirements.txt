@@ -1,3 +1,6 @@
-fastapi==0.95.0
-uvicorn==0.20.0
-python-dotenv==1.0.0
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+tensorflow==2.16.1   # python 3.11 에서 가장 권장되는 tensorflow 버전
+opencv-python==4.8.1.78
+numpy==1.24.3
+Pillow==10.1.0

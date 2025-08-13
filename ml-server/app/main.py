@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from app.models.model_loader import ModelManager
 from dotenv import load_dotenv
 import logging
 
@@ -20,6 +20,8 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+# model loader/cache
+model_manager = ModelManager()
 
 # CORS 설정 (FE,BE 연결용)
 # BE ->(frame data) -> AI
@@ -28,7 +30,11 @@ app = FastAPI(
 # front : http://mega-crew-react-deploy.s3-website.ap-northeast-2.amazonaws.com
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:8080",
+        "http://localhost:3000",
+        "http://mega-crew-react-deploy.s3-website.ap-northeast-2.amazonaws.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,22 +42,22 @@ app.add_middleware(
 
 
 # 요청/응답 모델 정의
-class HealthResponse(BaseModel):
-    status: str
-    message: str
-    version: str
+# class HealthResponse(BaseModel):
+#     status: str
+#     message: str
+#     version: str
 
 
-class FrameRequest(BaseModel):
-    frame_data: str  # Base64 인코딩된 이미지
-    timestamp: int
-    session_id: str
-    frame_index: int
+# class FrameRequest(BaseModel):
+#     frame_data: str  # Base64 인코딩된 이미지
+#     timestamp: int
+#     session_id: str
+#     frame_index: int
 
 
-class FrameResponse(BaseModel):
-    success: bool
-    result: dict = None  # text -> aws bedrock에 연결
+# class FrameResponse(BaseModel):
+#     success: bool
+#     result: dict = None  # text -> aws bedrock에 연결
 
 
 # 기본 엔드포인트
@@ -61,39 +67,39 @@ async def root():
     return {"message": "Sign Language AI Server", "status": "running", "docs": "/docs"}
 
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """헬스체크 엔드포인트"""
-    return HealthResponse(
-        status="healthy", message="AI 서버가 정상적으로 동작 중입니다.", version="1.0.0"
-    )
+# @app.get("/health", response_model=HealthResponse)
+# async def health_check():
+#     """헬스체크 엔드포인트"""
+#     return HealthResponse(
+#         status="healthy", message="AI 서버가 정상적으로 동작 중입니다.", version="1.0.0"
+#     )
 
 
 # 임시 프레임 분석 엔드포인트 (모델 로드 전)
-@app.post("/analyze-frame", response_model=FrameResponse)
-async def analyze_frame(request: FrameRequest):
-    """프레임 분석 엔드포인트 (임시 구현)"""
-    try:
-        logger.info(
-            f"프레임 분석 요청 - Session: {request.session_id}, Frame: {request.frame_index}"
-        )
+# @app.post("/analyze-frame", response_model=FrameResponse)
+# async def analyze_frame(request: FrameRequest):
+#     """프레임 분석 엔드포인트 (임시 구현)"""
+#     try:
+#         logger.info(
+#             f"프레임 분석 요청 - Session: {request.session_id}, Frame: {request.frame_index}"
+#         )
 
-        # 임시 응답 (실제 모델 구현 전)
-        return FrameResponse(
-            success=True,
-            message="프레임 분석 완료 (임시)",
-            result={
-                "predicted_text": "안녕하세요",
-                "confidence": 0.85,
-                "processing_time": 0.1,
-            },
-        )
+#         # 임시 응답 (실제 모델 구현 전)
+#         return FrameResponse(
+#             success=True,
+#             message="프레임 분석 완료 (임시)",
+#             result={
+#                 "predicted_text": "안녕하세요",
+#                 "confidence": 0.85,
+#                 "processing_time": 0.1,
+#             },
+#         )
 
-    except Exception as e:
-        logger.error(f"프레임 분석 오류: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"프레임 분석 중 오류가 발생했습니다: {str(e)}"
-        )
+#     except Exception as e:
+#         logger.error(f"프레임 분석 오류: {str(e)}")
+#         raise HTTPException(
+#             status_code=500, detail=f"프레임 분석 중 오류가 발생했습니다: {str(e)}"
+#         )
 
 
 # 서버 정보 엔드포인트
@@ -114,12 +120,33 @@ async def server_info():
 
 
 # 애플리케이션 시작/종료 이벤트
+@app.on_event("startup")
 async def startup_event():
-    """서버 시작 시 실행"""
-    logger.info("🚀 AI 서버가 시작되었습니다.")
-    logger.info(
-        f"📍 서버 주소: http://{os.getenv('HOST', '0.0.0.0')}:{os.getenv('PORT', '8000')}"
-    )
+    logger.info("AI 서버 시작 중...")
+    success = await model_manager.load_model()
+    if not success:
+        logger.error("모델 로드 실패 - 서버 시작 중단")
+        raise Exception("모델 로드 실패")
+    logger.info("AI 서버 시작 완료")
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "model_loaded": model_manager.is_ready()}
+
+
+@app.get("/model/status")
+async def model_status():
+    return {
+        "loaded": model_manager.is_ready(),
+        "cache_info": (
+            "cached"
+            if model_manager.cache.is_cached(
+                model_manager.s3_client.settings.MODEL_S3_KEY
+            )
+            else "not_cached"
+        ),
+    }
 
 
 @app.on_event("shutdown")
