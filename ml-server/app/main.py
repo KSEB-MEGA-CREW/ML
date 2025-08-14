@@ -1,165 +1,142 @@
 import os
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from app.models.model_loader import ModelManager
-from dotenv import load_dotenv
 import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-# 환경 변수 로드
-load_dotenv()
+from app.models.model_loader import ModelManager
+from app.api.endpoints import router
+from app.utils.logger import setup_logger
+from app.config import settings
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO)
+# logging setting
+setup_logger()
 logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """애플리케이션 라이프사이클 관리"""
+    # starting...
+    logger.info("🚀 AI 서버 시작")
+    logger.info(f"환경: {settings.DEBUG and 'Development' or 'Production'}")
+    logger.info(f"TensorFlow GPU 사용: {settings.TF_ENABLE_GPU_MEMORY_GROWTH}")
+
+    try:
+        # 모델 매니저 싱글톤 인스턴스 생성
+        model_manager = ModelManager()
+
+        # 모델 로드
+        logger.info("📦 모델 로드 시작...")
+        success = await model_manager.load_model()
+
+        if success:
+            logger.info("✅ 모델 로드 완료")
+            model_info = model_manager.get_model_info()
+            logger.info(f"모델 정보: {model_info}")
+        else:
+            logger.error("❌ 모델 로드 실패")
+            # 개발 환경에서는 계속 진행, 프로덕션에서는 종료
+            if not settings.DEBUG:
+                raise RuntimeError("모델 로드 필수")
+
+    except Exception as e:
+        logger.error(f"❌ 서버 시작 중 오류: {e}")
+        if not settings.DEBUG:
+            raise
+
+    yield
+
+    # 종료 시
+    logger.info("🛑 AI 서버 종료")
+    try:
+        model_manager = ModelManager()
+        if model_manager.is_ready():
+            model_manager.unload_model()
+            logger.info("모델 언로드 완료")
+    except Exception as e:
+        logger.error(f"종료 중 오류: {e}")
 
 # FastAPI 앱 생성
 app = FastAPI(
-    title="Mega-Crew SLT AI Server",
-    description="실시간 수화 번역 AI 서버",
+    title="Sign Language AI Server",
+    description="수화 인식 AI 서버 - TensorFlow 기반",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    lifespan=lifespan,
+    debug=settings.DEBUG,
 )
-# model loader/cache
-model_manager = ModelManager()
 
-# CORS 설정 (FE,BE 연결용)
-# BE ->(frame data) -> AI
-# AI ->(gloss data) -> FE
-# AI ->(interpreted text) -> FE
-# front : http://mega-crew-react-deploy.s3-website.ap-northeast-2.amazonaws.com
+# CORS 미들웨어 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8080",
-        "http://localhost:3000",
-        "http://mega-crew-react-deploy.s3-website.ap-northeast-2.amazonaws.com",
-    ],
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
+# 요청 로깅 미들웨어 (개발 환경에서만)
+if settings.DEBUG:
 
-# 요청/응답 모델 정의
-# class HealthResponse(BaseModel):
-#     status: str
-#     message: str
-#     version: str
+    @app.middleware("http")
+    async def log_requests(request, call_next):
+        import time
+
+        start_time = time.time()
+
+        response = await call_next(request)
+
+        process_time = time.time() - start_time
+        logger.info(
+            f"{request.method} {request.url.path} - "
+            f"Status: {response.status_code} - "
+            f"Time: {process_time:.3f}s"
+        )
+
+        return response
 
 
-# class FrameRequest(BaseModel):
-#     frame_data: str  # Base64 인코딩된 이미지
-#     timestamp: int
-#     session_id: str
-#     frame_index: int
+# API 라우터 등록
+app.include_router(router, prefix="/api/v1", tags=["AI Analysis"])
 
 
-# class FrameResponse(BaseModel):
-#     success: bool
-#     result: dict = None  # text -> aws bedrock에 연결
-
-
-# 기본 엔드포인트
-@app.get("/")
+# 루트 엔드포인트
+@app.get("/", tags=["Root"])
 async def root():
     """루트 엔드포인트"""
-    return {"message": "Sign Language AI Server", "status": "running", "docs": "/docs"}
+    model_manager = ModelManager()
 
-
-# @app.get("/health", response_model=HealthResponse)
-# async def health_check():
-#     """헬스체크 엔드포인트"""
-#     return HealthResponse(
-#         status="healthy", message="AI 서버가 정상적으로 동작 중입니다.", version="1.0.0"
-#     )
-
-
-# 임시 프레임 분석 엔드포인트 (모델 로드 전)
-# @app.post("/analyze-frame", response_model=FrameResponse)
-# async def analyze_frame(request: FrameRequest):
-#     """프레임 분석 엔드포인트 (임시 구현)"""
-#     try:
-#         logger.info(
-#             f"프레임 분석 요청 - Session: {request.session_id}, Frame: {request.frame_index}"
-#         )
-
-#         # 임시 응답 (실제 모델 구현 전)
-#         return FrameResponse(
-#             success=True,
-#             message="프레임 분석 완료 (임시)",
-#             result={
-#                 "predicted_text": "안녕하세요",
-#                 "confidence": 0.85,
-#                 "processing_time": 0.1,
-#             },
-#         )
-
-#     except Exception as e:
-#         logger.error(f"프레임 분석 오류: {str(e)}")
-#         raise HTTPException(
-#             status_code=500, detail=f"프레임 분석 중 오류가 발생했습니다: {str(e)}"
-#         )
-
-
-# 서버 정보 엔드포인트
-@app.get("/info")
-async def server_info():
-    """서버 정보 조회"""
     return {
-        "server": "Sign Language AI Server",
+        "message": "Sign Language AI Server is running",
         "version": "1.0.0",
-        "python_version": "3.9+",
-        "framework": "FastAPI",
+        "status": "healthy",
+        "model_status": "loaded" if model_manager.is_ready() else "not_loaded",
+        "framework": "TensorFlow",
         "endpoints": {
-            "health": "/health",
-            "analyze": "/analyze-frame",
+            "health": "/api/v1/health",
+            "analyze": "/api/v1/analyze-frame",
+            "labels": "/api/v1/labels",
+            "model_info": "/api/v1/model-info",
             "docs": "/docs",
         },
     }
 
 
-# 애플리케이션 시작/종료 이벤트
-@app.on_event("startup")
-async def startup_event():
-    logger.info("AI 서버 시작 중...")
-    success = await model_manager.load_model()
-    if not success:
-        logger.error("모델 로드 실패 - 서버 시작 중단")
-        raise Exception("모델 로드 실패")
-    logger.info("AI 서버 시작 완료")
-
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "model_loaded": model_manager.is_ready()}
-
-
-@app.get("/model/status")
-async def model_status():
-    return {
-        "loaded": model_manager.is_ready(),
-        "cache_info": (
-            "cached"
-            if model_manager.cache.is_cached(
-                model_manager.s3_client.settings.MODEL_S3_KEY
-            )
-            else "not_cached"
-        ),
-    }
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """서버 종료 시 실행"""
-    logger.info("🛑 AI 서버가 종료되었습니다.")
-
-
+# 개발 서버 실행용 (로컬 테스트용)
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8000"))
-    debug = os.getenv("DEBUG", "True").lower() == "true"
+    # 환경변수에서 설정 로드
+    host = settings.HOST
+    port = settings.PORT
+    reload = settings.DEBUG
 
-    uvicorn.run("main:app", host=host, port=port, reload=debug, log_level="info")
+    logger.info(f"개발 서버 시작: http://{host}:{port}")
+    logger.info(f"API 문서: http://{host}:{port}/docs")
+
+    uvicorn.run(
+        "main:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_level=settings.LOG_LEVEL.lower(),
+    )

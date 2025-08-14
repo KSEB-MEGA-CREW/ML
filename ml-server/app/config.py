@@ -14,8 +14,8 @@ class Settings:
     AWS_REGION: str = os.getenv("AWS_REGION", "ap-northeast-2")
 
     # S3 설정
-    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "mega-crew-ml-models-dev")
-    MODEL_S3_KEY: str = os.getenv("MODEL_S3_KEY", "frame to gloss/v1/gesture_model.h5")
+    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "sign-language-models")
+    MODEL_S3_KEY: str = os.getenv("MODEL_S3_KEY", "models/sign_language_model.pth")
 
     # 모델 설정 input data shape
     MODEL_INPUT_SIZE: int = 194
