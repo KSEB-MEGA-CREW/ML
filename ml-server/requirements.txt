@@ -1,48 +1,34 @@
-# FastAPI 웹 프레임워크
+# === 빌드 도구 (먼저 설치) ===
+setuptools>=65.0.0
+wheel>=0.38.0
+
+# === 기본 의존성 ===
+numpy==1.26.4  # TensorFlow와 호환되는 버전으로 변경
+
+# === 이미지 처리 ===
+opencv-python==4.8.1.78
+Pillow>=10.0.0
+
+# === AI/ML 프레임워크 ===
+tensorflow>=2.15.0
+
+# === 웹 프레임워크 ===
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
+pydantic==1.10.13  # FastAPI 0.104.1과 호환되는 버전으로 변경
 
-# 데이터 검증
-pydantic==2.5.0
-
-# TensorFlow GPU 지원 (통합 패키지)
-tensorflow[and-cuda]>=2.15.0,<3.0.0
-
-# 이미지 처리 및 컴퓨터 비전
-opencv-python==4.8.1.78
-mediapipe>=0.10.0  # 버전 범위로 변경
-Pillow>=10.0.0
-
-# 수치 계산
-numpy==1.24.3
-
-# AWS 서비스 (S3)
+# === AWS 서비스 ===
 boto3==1.34.0
-botocore==1.34.0
 
-# 비동기 처리
-asyncio-mqtt==0.13.0
+# === 기타 유틸리티 ===
 aiofiles==23.2.1
-
-# 로깅 및 설정
-python-dotenv==1.0.0
-
-# HTTP 클라이언트 (테스트용)
+python-dotenv>=1.0.1 # 최신 버전으로 변경
+typing-extensions==4.8.0
 httpx==0.25.2
 requests==2.31.0
 
-# 개발 및 테스트 도구 (선택사항)
+# === 개발 도구 ===
 pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-mock==3.12.0
-
-# 타입 힌트
-typing-extensions==4.8.0
-
-# 보안
-cryptography==41.0.7
-
-# 기타 유틸리티
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
