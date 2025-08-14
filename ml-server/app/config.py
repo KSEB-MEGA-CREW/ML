@@ -21,6 +21,12 @@ class Settings:
     MODEL_INPUT_SIZE: int = 194
     MODEL_NUM_CLASSES: int = 14
     CONFIDENCE_THRESHOLD: float = 0.6
+    MODEL_CACHE_DIR: str = os.getenv("MODEL_CACHE_DIR", "/tmp/model_cache")
+
+    # TensorFlow 설정
+    TF_ENABLE_GPU_MEMORY_GROWTH: bool = (
+        os.getenv("TF_ENABLE_GPU_MEMORY_GROWTH", "True").lower() == "true"
+    )
 
     # label file 설정
     CLASS_LABELS_FILE: str = os.getenv(
