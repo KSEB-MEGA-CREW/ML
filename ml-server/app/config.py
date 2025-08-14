@@ -14,17 +14,17 @@ class Settings:
     AWS_REGION: str = os.getenv("AWS_REGION", "ap-northeast-2")
 
     # S3 설정
-    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "sign-language-models")
-    MODEL_S3_KEY: str = os.getenv("MODEL_S3_KEY", "models/sign_language_model.pth")
+    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "mega-crew-ml-models-dev")
+    MODEL_S3_KEY: str = os.getenv("MODEL_S3_KEY", "frame to gloss/v1/gesture_model.h5")
 
     # 모델 설정 input data shape
     MODEL_INPUT_SIZE: int = 194
-    MODEL_NUM_CLASSES: int = 20
+    MODEL_NUM_CLASSES: int = 14
     CONFIDENCE_THRESHOLD: float = 0.6
 
     # label file 설정
     CLASS_LABELS_FILE: str = os.getenv(
-        "CLASS_LABELS_FILE", "/app/labels/frame_to_gloss_v0.json"
+        "CLASS_LABELS_FILE", "/app/labels/label_map.json"
     )
 
     # 전처리 설정

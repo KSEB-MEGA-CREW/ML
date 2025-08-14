@@ -15,6 +15,27 @@ class ModelManager:
         self.cache = ModelCache()
         self.model_loaded = False
 
+        # Tensorflow 설정 최적화
+        self._configure_tensorflow()
+
+    def _configure_tensorflow(self):
+        """TensorFlow 설정 최적화"""
+        try:
+            # GPU 메모리 증가 허용 (GPU 사용 시)
+            gpus = tf.config.experimental.list_physical_devices("GPU")
+            if gpus:
+                for gpu in gpus:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                logger.info(f"GPU 사용 가능: {len(gpus)}개")
+            else:
+                logger.info("CPU 모드로 실행")
+
+            # 불필요한 로그 억제
+            tf.get_logger().setLevel("ERROR")
+
+        except Exception as e:
+            logger.warning(f"TensorFlow 설정 중 경고: {e}")
+
     async def load_model(self) -> bool:
         """S3에서 h5 모델을 로드(캐시 우선 사용)"""
         try:
@@ -65,7 +86,7 @@ class ModelManager:
             return cache_path
 
         # 2. S3에서 다운로드
-        logger.ingfo(f"S3에서 모델 다운로드 시작: {s3_key}")
+        logger.info(f"S3에서 모델 다운로드 시작: {s3_key}")
 
         # 3. S3 파일 존재 확인
         if not await self.s3_client.check_file_exists(s3_key):
@@ -95,6 +116,10 @@ class ModelManager:
     def is_ready(self) -> bool:
         """모델이 로드되어 사용 가능한지 확인"""
         return self.model_loaded and self.model is not None
+
+    def is_loaded(self) -> bool:
+        """호환성을 위한 별칭"""
+        return self.is_ready()
 
     def get_model_info(self) -> dict:
         """모델 정보 반환"""
