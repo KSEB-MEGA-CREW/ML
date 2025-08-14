@@ -1,7 +1,7 @@
 import boto3
 import asyncio
 from pathlib import Path
-from app.utils.config import settings
+from app.config import settings
 import logging
 
 logger = logging.getLogger(__name__)

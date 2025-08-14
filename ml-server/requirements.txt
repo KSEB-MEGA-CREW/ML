@@ -1,34 +1,35 @@
-# === 빌드 도구 (먼저 설치) ===
+# === Build Tools (Install first) ===
 setuptools>=65.0.0
 wheel>=0.38.0
 
-# === 기본 의존성 ===
-numpy==1.26.4  # TensorFlow와 호환되는 버전으로 변경
+# === Core Dependencies ===
+numpy==1.26.4  # Explicit versioning to prevent conflicts
 
-# === 이미지 처리 ===
-opencv-python==4.8.1.78
+# === Image Processing ===
+opencv-python==4.8.1.78  # Fixed version
 Pillow>=10.0.0
 
-# === AI/ML 프레임워크 ===
-tensorflow>=2.15.0
+# === AI/ML Frameworks ===
+tensorflow==2.15.0
+mediapipe==0.10.11
 
-# === 웹 프레임워크 ===
+# === Web Frameworks ===
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
-pydantic==1.10.13  # FastAPI 0.104.1과 호환되는 버전으로 변경
+pydantic==1.10.13
 
-# === AWS 서비스 ===
+# === AWS Services ===
 boto3==1.34.0
 
-# === 기타 유틸리티 ===
+# === Other Utilities ===
 aiofiles==23.2.1
-python-dotenv>=1.0.1 # 최신 버전으로 변경
+python-dotenv>=1.0.1
 typing-extensions==4.8.0
 httpx==0.25.2
 requests==2.31.0
 
-# === 개발 도구 ===
+# === Development Tools ===
 pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-mock==3.12.0
