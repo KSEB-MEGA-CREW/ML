@@ -2,7 +2,7 @@ import tensorflow as tf
 import asyncio
 from app.utils.s3_client import S3Client
 from app.models.model_cache import ModelCache
-from app.utils.config import settings
+from ..config import settings
 import logging
 
 logger = logging.getLogger(__name__)

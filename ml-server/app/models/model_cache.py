@@ -2,7 +2,7 @@
 import os
 import hashlib
 from pathlib import Path
-from app.utils.config import settings
+from ..config import settings
 import logging
 
 logger = logging.getLogger(__name__)
