@@ -12,6 +12,7 @@ Pillow>=10.0.0
 # === AI/ML Frameworks ===
 tensorflow==2.15.0
 mediapipe==0.10.11
+torch
 
 # === Web Frameworks ===
 fastapi==0.104.1
