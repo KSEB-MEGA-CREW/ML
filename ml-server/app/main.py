@@ -159,14 +159,14 @@ if __name__ == "__main__":
     reload = settings.DEBUG
 
     # debug
-    print(
+    logger.info(
         f"AWS_ACCESS_KEY_ID: {settings.AWS_ACCESS_KEY_ID[:10] if settings.AWS_ACCESS_KEY_ID else 'None'}..."
     )
-    print(
+    logger.info(
         f"AWS_SECRET_ACCESS_KEY: {'Set' if settings.AWS_SECRET_ACCESS_KEY else 'None'}"
     )
-    print(f"S3_BUCKET_NAME: {settings.S3_BUCKET_NAME}")
-    print(f"MODEL_S3_KEY: {settings.MODEL_S3_KEY}")
+    logger.info(f"S3_BUCKET_NAME: {settings.S3_BUCKET_NAME}")
+    logger.info(f"MODEL_S3_KEY: {settings.MODEL_S3_KEY}")
 
     logger.info(f"Development server starting: http://{host}:{port}")
     logger.info(f"API documentation: http://{host}:{port}/docs")

@@ -1,6 +1,10 @@
 # config.py
 import os
 from typing import List, Optional
+from dotenv import load_dotenv
+
+# loading .env file
+load_dotenv()
 
 
 class Settings:
@@ -33,6 +37,16 @@ class Settings:
         "./labels/label_map.json",
         "labels/label_map.json",
     ]
+
+    # MediaPipe
+    PROCESS_POOL_SIZE: int = int(os.getenv("PROCESS_POOL_SIZE", "4"))
+    MAX_HANDS: int = int(os.getenv("MAX_HANDS", "2"))
+    HAND_CONFIDENCE: float = float(os.getenv("HAND_CONFIDENCE", "0.7"))
+    POSE_CONFIDENCE: float = float(os.getenv("POSE_CONFIDENCE", "0.7"))
+
+    # Model
+    MODEL_INPUT_SIZE: int = int(os.getenv("MODEL_INPUT_SIZE", "194"))
+    MODEL_NUM_CLASSES: int = int(os.getenv("MODEL_NUM_CLASSES", "14"))
 
     # TensorFlow
     TF_ENABLE_GPU_MEMORY_GROWTH: bool = (

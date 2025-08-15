@@ -66,7 +66,11 @@ class ModelManager:
             for local_path in local_model_paths:
                 if os.path.exists(local_path):
                     logger.info(f"Using local model file: {local_path}")
-                    self.model = await self._load_h5_model(local_path)
+                    # load_model() from TensorFlow is not asyn func
+                    loop = asyncio.get_event_loop()
+                    self.model = await loop.run_in_executor(
+                        None, self._load_h5_model, local_path
+                    )
                     self.model_loaded = True
                     return True
 
@@ -90,7 +94,7 @@ class ModelManager:
             logger.error(f"Error during model loading: {e}")
             return False
 
-    async def _load_h5_model(self, model_path: str):
+    def _load_h5_model(self, model_path: str):  # do not be async
         """Load TensorFlow model"""
         try:
             model = tf.keras.models.load_model(model_path, compile=False)

@@ -57,7 +57,7 @@ async def get_predictor() -> SignLanguagePredictor:
     """Get predictor instance with error handling"""
     try:
         model_manager = ModelManager()
-        if not model_manager.is_loaded():
+        if not model_manager.is_ready():
             raise HTTPException(
                 status_code=503, detail="Model not loaded. Please try again later."
             )
@@ -134,7 +134,7 @@ async def health_check() -> Dict[str, Any]:
 
         return {
             "status": "healthy",
-            "model_loaded": model_manager.is_loaded(),
+            "model_loaded": model_manager.is_ready(),
             "model_info": model_manager.get_model_info(),
             "session_stats": session_stats,
             "timestamp": time.time(),

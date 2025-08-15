@@ -45,10 +45,11 @@ class S3Client:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
-                self.s3_client.download_file,
-                settings.S3_BUCKET_NAME,  # Fixed: use bucket name from settings
-                s3_key,
-                local_path,
+                lambda: self.s3_client.download_file( # must be keyword arguments
+                    Bucket=settings.S3_BUCKET_NAME,
+                    Key=s3_key,
+                    Filename=local_path
+                )
             )
 
             logger.info(f"Model download completed: {s3_key} -> {local_path}")
@@ -68,9 +69,10 @@ class S3Client:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
-                self.s3_client.head_object,
-                settings.S3_BUCKET_NAME,  # Fixed
-                s3_key,
+                lambda: self.s3_client.head_object(  # must be keyword arguments
+                    Bucket=settings.S3_BUCKET_NAME, 
+                    Key=s3_key
+                )
             )
             logger.info(f"S3 file exists: {s3_key}")
             return True
