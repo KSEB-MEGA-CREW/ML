@@ -62,6 +62,32 @@ class LabelLoader:
             logger.error(f"Label loading failed: {e}")
             return None
 
+    async def validate_model_compatibility(self, expected_num_classes: int) -> bool:
+        """Validate model-label compatibility"""
+        try:
+            labels = await self.load_class_labels()
+            if labels is None:
+                logger.error("Labels not loaded, cannot validate compatibility")
+                return False
+
+            actual_num_classes = len(labels)
+
+            if actual_num_classes != expected_num_classes:
+                logger.warning(
+                    f"Model-label mismatch: model expects {expected_num_classes} classes, "
+                    f"but {actual_num_classes} labels loaded"
+                )
+                return False
+
+            logger.info(
+                f"Model-label compatibility verified: {actual_num_classes} classes"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Model compatibility validation failed: {e}")
+            return False
+
     def clear_cache(self):
         """Clear cache"""
         self._labels_cache = None
