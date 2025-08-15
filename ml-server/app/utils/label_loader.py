@@ -1,7 +1,7 @@
-# label data loader -> cache 방식, S3에서 가져오는 방식 구현
+# label data loader -> cache or take from S3 bucket
 import json
 import os
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any
 from ..config import settings
 import logging
 
@@ -13,44 +13,55 @@ class LabelLoader:
         self._labels_cache = None
 
     async def load_class_labels(self) -> List[str]:
-        """클래스 라벨을 로드 (캐시 사용)"""
+        """Load class labels with caching"""
         if self._labels_cache is not None:
             return self._labels_cache
 
         try:
-            # 우선 로컬에서 라벨 로드하는 경우만 구현
-            # 추후 필요 시 S3 버킷에서 로드하는 경우 구현하기
             labels_data = await self._load_from_local()
 
-            # JSON 데이터에서 클래스 리스트 추출
-            # 단순 배열 형태
+            # Extract class list from JSON data
             if isinstance(labels_data, list):
                 self._labels_cache = labels_data
+            elif isinstance(labels_data, dict) and "labels" in labels_data:
+                self._labels_cache = labels_data["labels"]
+            else:
+                raise ValueError("Invalid label file format")
 
-            logger.info(f"클래스 라벨 로드 완료: {len(self._labels_cache)} 개 클래스")
-            logger.debug(f"로드된 라벨: {self._labels_cache}")
+            logger.info(f"Class labels loaded: {len(self._labels_cache)} classes")
+            logger.debug(f"Loaded labels: {self._labels_cache}")
 
             return self._labels_cache
 
         except Exception as e:
-            logger.error(f"라벨 로드 실패: {str(e)}")
-            return None
+            logger.error(f"Failed to load labels: {str(e)}")
+            return []
 
     async def _load_from_local(self) -> Dict[str, Any]:
-        """로컬에서 라벨 로드"""
+        """Load labels from local file"""
         try:
             if not os.path.exists(settings.CLASS_LABELS_FILE):
-                return FileNotFoundError(
-                    f"라벨 파일이 존재하지 않음: {settings.CLASS_LABELS_FILE}"
+                raise FileNotFoundError(
+                    f"Label file not found: {settings.CLASS_LABELS_FILE}"
                 )
 
             with open(settings.CLASS_LABELS_FILE, "r", encoding="utf-8") as f:
-                return json.loads(f)
+                return json.load(f)
         except Exception as e:
-            logger.error(f"로컬에서 라벨 로드 실패: {str(e)}")
+            logger.error(f"Failed to load labels from local: {str(e)}")
             raise
 
+    async def validate_model_compatibility(self, model_num_classes: int) -> bool:
+        """Validate compatibility between model and labels"""
+        labels = await self.load_class_labels()
+        if len(labels) != model_num_classes:
+            logger.warning(
+                f"Model expects {model_num_classes} classes but labels have {len(labels)}"
+            )
+            return False
+        return True
+
     def clear_cache(self):
-        """캐시 초기화"""
+        """Clear label cache"""
         self._labels_cache = None
-        logger.info("라벨 캐시 초기화")
+        logger.info("Label cache cleared")

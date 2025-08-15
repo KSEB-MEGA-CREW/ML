@@ -1,6 +1,6 @@
-# 예측 수행 코드
-import torch
+# models/predictor.py
 import numpy as np
+import asyncio
 from typing import Dict, Any
 from ..preprocessing.image_processor import ImageProcessor
 from ..preprocessing.key_point_extractor import KeypointExtractor
@@ -19,50 +19,50 @@ class SignLanguagePredictor:
         self.keypoint_extractor = KeypointExtractor()
         self.feature_processor = FeatureProcessor()
         self.label_loader = LabelLoader()
-        self.class_names = None  # 지연 로딩
+        self.class_names = None
         self._model_validated = False
 
     async def _ensure_labels_loaded(self):
-        """라벨이 로드되지 않았다면 로드하고 모델과 호환성 검증"""
+        """Load labels if not loaded and validate model compatibility"""
         if self.class_names is None:
             self.class_names = await self.label_loader.load_class_labels()
 
-            # 모델과 라벨 수 호환성 검증 (한 번만)
+            # Validate model-label compatibility once
             if not self._model_validated:
                 is_compatible = await self.label_loader.validate_model_compatibility(
                     settings.MODEL_NUM_CLASSES
                 )
                 if not is_compatible:
-                    logger.warning("모델과 라벨 수가 일치하지 않습니다.")
+                    logger.warning("Model and label count mismatch")
                 self._model_validated = True
 
     async def predict(
         self, base64_image: str, session_id: str, frame_index: int
     ) -> Dict[str, Any]:
-        """수어 예측 수행"""
+        """Perform sign language prediction"""
         try:
-            # 라벨 로드 및 체크
+            # Load and validate labels
             await self._ensure_labels_loaded()
 
-            # 1. Base64 -> OpenCV 이미지 변환
-            image = self.image_processor.decoded_base64(base64_image)
-            if image is None:
+            # 1. Convert Base64 to OpenCV image
+            image = self.image_processor.decode_base64(base64_image)
+            if image is None or not self.image_processor.validate_image(image):
                 return self._create_no_detection_response(session_id, frame_index)
 
-            # 2. keypoint 추출
-            keypoints = self.keypoint_extractor.extract_keypoints(image)
+            # 2. Extract keypoints asynchronously
+            keypoints = await self.keypoint_extractor.extract_keypoints(image)
 
-            # 3. feature vector 생성
+            # 3. Create feature vector
             feature_vector = self.feature_processor.create_feature_vector(keypoints)
 
-            # 4. feature vector 검증
+            # 4. Validate feature vector
             if not self.feature_processor.validate_features(feature_vector):
                 return self._create_no_detection_response(session_id, frame_index)
 
-            # 5. model 예측
+            # 5. Run model inference
             prediction_result = await self._run_inference(feature_vector)
 
-            # 6. 결과 후처리
+            # 6. Post-process results
             final_result = self._postprocess_prediction(
                 prediction_result, keypoints, session_id, frame_index
             )
@@ -70,34 +70,45 @@ class SignLanguagePredictor:
             return final_result
 
         except Exception as e:
-            logger.error(f"예측 오류: session={session_id}, error={str(e)}")
+            logger.error(f"Prediction error: session={session_id}, error={str(e)}")
             return self._create_error_response(session_id, frame_index, str(e))
 
     async def _run_inference(self, feature_vector: np.ndarray) -> Dict[str, Any]:
-        """모델 추론 실행"""
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        """Run model inference using TensorFlow"""
+        try:
+            # Prepare input data
+            input_data = np.expand_dims(feature_vector, axis=0)
 
-        input_tensor = torch.FloatTensor(feature_vector).unsqueeze(0).to(device)
+            # Run prediction asynchronously
+            loop = asyncio.get_event_loop()
+            predictions = await loop.run_in_executor(
+                None, self.model.predict, input_data
+            )
 
-        self.model.eval()  # 함수 추가 구현 필요
-        with torch.no_grad():
-            outputs = self.model(input_tensor)
-            probabilities = torch.softmax(outputs, dim=1)
+            # Apply softmax if needed
+            probabilities = predictions[0]
+            if not np.allclose(np.sum(probabilities), 1.0, rtol=1e-5):
+                probabilities = self._softmax(probabilities)
 
-        probs_numpy = probabilities.cpu().numpy()[0]
+            # Calculate top classes
+            num_classes = len(self.class_names)
+            top_k = min(3, num_classes)
+            top_indices = np.argsort(probabilities)[-top_k:][::-1]
 
-        # 현재 라벨 수에 맞춰 top 3 계산
-        num_classes = len(self.class_names)
-        top_k = min(3, num_classes)  # 최소 3개 또는 전체 클래스 수
+            return {
+                "probabilities": probabilities,
+                "top_classes": top_indices,
+                "top_scores": probabilities[top_indices],
+            }
 
-        top_indices = np.argsort(probs_numpy)[-top_k:][::-1]
+        except Exception as e:
+            logger.error(f"Inference failed: {e}")
+            raise
 
-        # output data shape!!!
-        return {
-            "prbabilities": probs_numpy,
-            "top_classes": top_indices,
-            "top_scores": probs_numpy[top_indices],
-        }
+    def _softmax(self, x):
+        """Apply softmax function"""
+        exp_x = np.exp(x - np.max(x))
+        return exp_x / np.sum(exp_x)
 
     def _postprocess_prediction(
         self,
@@ -106,57 +117,63 @@ class SignLanguagePredictor:
         session_id: str,
         frame_index: int,
     ) -> Dict[str, Any]:
-        """예측 결과 후처리"""
-        top_class_idx = prediction_result["top_classes"][0]
-        confidence = float(prediction_result["top_scores"][0])
+        """Post-process prediction results"""
+        try:
+            top_class_idx = prediction_result["top_classes"][0]
+            confidence = float(prediction_result["top_scores"][0])
 
-        # 인덱스 범위 검증
-        if top_class_idx >= len(self.class_names):
-            logger.error(
-                f"클래스 인덱스 범위 초과: {top_class_idx} >= {len(self.class_names)}"
-            )
-            predicted_text = "인식 오류"
-            confidence_level = "ERROR"
-        elif confidence < settings.CONFIDENCE_THRESHOLD:
-            predicted_text = "인식 중..."
-            confidence_level = "LOW"
-        elif confidence < 0.8:
-            predicted_text = self.class_names[top_class_idx]
-            confidence_level = "MEDIUM"
-        else:
-            predicted_text = self.class_names[top_class_idx]
-            confidence_level = "HIGH"
-
-        # Top predictions 생성 (인덱스 범위 검증 포함)
-        top_predictions = []
-        for idx, score in zip(
-            prediction_result["top_classes"], prediction_result["top_scores"]
-        ):
-            if idx < len(self.class_names):
-                top_predictions.append(
-                    {"class": self.class_names[idx], "confidence": float(score)}
+            # Validate class index
+            if top_class_idx >= len(self.class_names):
+                logger.error(
+                    f"Class index out of range: {top_class_idx} >= {len(self.class_names)}"
                 )
+                predicted_text = "Recognition Error"
+                confidence_level = "ERROR"
+            elif confidence < settings.CONFIDENCE_THRESHOLD:
+                predicted_text = "Recognizing..."
+                confidence_level = "LOW"
+            elif confidence < 0.8:
+                predicted_text = self.class_names[top_class_idx]
+                confidence_level = "MEDIUM"
+            else:
+                predicted_text = self.class_names[top_class_idx]
+                confidence_level = "HIGH"
 
-        return {
-            "session_id": session_id,
-            "frame_index": frame_index,
-            "predicted_class": predicted_text,
-            "confidence": confidence,
-            "confidence_level": confidence_level,
-            "top_predictions": top_predictions,
-            "has_hand_detection": keypoints["hand_landmarks"]["left_hand"] is not None
-            or keypoints["hand_landmarks"]["right_hand"] is not None,
-            "has_pose_detection": keypoints["pose_landmarks"] is not None,
-        }
+            # Create top predictions with index validation
+            top_predictions = []
+            for idx, score in zip(
+                prediction_result["top_classes"], prediction_result["top_scores"]
+            ):
+                if idx < len(self.class_names):
+                    top_predictions.append(
+                        {"class": self.class_names[idx], "confidence": float(score)}
+                    )
+
+            return {
+                "session_id": session_id,
+                "frame_index": frame_index,
+                "predicted_class": predicted_text,
+                "confidence": confidence,
+                "confidence_level": confidence_level,
+                "top_predictions": top_predictions,
+                "has_hand_detection": keypoints["hand_landmarks"]["left_hand"]
+                is not None
+                or keypoints["hand_landmarks"]["right_hand"] is not None,
+                "has_pose_detection": keypoints["pose_landmarks"] is not None,
+            }
+
+        except Exception as e:
+            logger.error(f"Post-processing failed: {e}")
+            return self._create_error_response(session_id, frame_index, str(e))
 
     def _create_no_detection_response(
         self, session_id: str, frame_index: int
     ) -> Dict[str, Any]:
-        """검출 실패시 응답"""
+        """Create response for no detection"""
         return {
             "session_id": session_id,
             "frame_index": frame_index,
-            "predicted_class": "손동작을 인식할 수 없습니다",
+            "predicted_class": "No hand gesture detected",
             "confidence": 0.0,
             "confidence_level": "NONE",
             "top_predictions": [],
@@ -167,11 +184,11 @@ class SignLanguagePredictor:
     def _create_error_response(
         self, session_id: str, frame_index: int, error_msg: str
     ) -> Dict[str, Any]:
-        """에러 응답"""
+        """Create error response"""
         return {
             "session_id": session_id,
             "frame_index": frame_index,
-            "predicted_class": "처리 중 오류 발생",
+            "predicted_class": "Processing error occurred",
             "confidence": 0.0,
             "confidence_level": "ERROR",
             "top_predictions": [],
@@ -179,3 +196,11 @@ class SignLanguagePredictor:
             "has_pose_detection": False,
             "error": error_msg,
         }
+
+    def __del__(self):
+        """Clean up resources"""
+        try:
+            if hasattr(self, "keypoint_extractor"):
+                del self.keypoint_extractor
+        except Exception as e:
+            logger.debug(f"Predictor cleanup warning: {e}")

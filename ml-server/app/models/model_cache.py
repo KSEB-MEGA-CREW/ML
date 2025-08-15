@@ -1,4 +1,4 @@
-# 다운로드 받은 모델 캐시 관리
+# model cache
 import os
 import hashlib
 from pathlib import Path
@@ -14,17 +14,31 @@ class ModelCache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def get_cache_path(self, s3_key: str) -> str:
-        """S3 키를 해싱하여 캐시 파일 경로 생성"""
+        """Generate cache file path by hashing S3 key"""
         key_hash = hashlib.md5(s3_key.encode()).hexdigest()
-        return str(self.cache_dir / f"{key_hash}.h5")  # 모델 확장자 h5
+        return str(self.cache_dir / f"{key_hash}.h5")
 
-    def is_cached(self, s3_key) -> bool:
-        """모델 캐시 여부 확인"""
+    def is_cached(self, s3_key: str) -> bool:
+        """Check if model is cached"""
         cache_path = self.get_cache_path(s3_key)
-        return os.path.exists(cache_path)
+        exists = os.path.exists(cache_path)
+        if exists:
+            # Verify file is not corrupted
+            try:
+                size = os.path.getsize(cache_path)
+                if size == 0:
+                    logger.warning(f"Cached model file is empty: {cache_path}")
+                    os.remove(cache_path)
+                    return False
+            except OSError:
+                return False
+        return exists
 
     def clear_cache(self):
-        """캐시 디렉토리 정리 unlink"""
-        for file in self.cache_dir.glob("*.h5"):
-            file.unlink()
-        logger.info("모델 캐시 정리 완료")
+        """Clear cache directory"""
+        try:
+            for file in self.cache_dir.glob("*.h5"):
+                file.unlink()
+            logger.info("Model cache cleared")
+        except Exception as e:
+            logger.error(f"Failed to clear cache: {e}")

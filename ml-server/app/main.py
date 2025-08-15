@@ -1,71 +1,75 @@
 import os
 import logging
+import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import time
 
 from app.models.model_loader import ModelManager
 from app.api.endpoints import router
 from app.utils.logger import setup_logger
 from app.config import settings
 
-# logging setting
+# Setup logging
 setup_logger()
 logger = logging.getLogger(__name__)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """애플리케이션 라이프사이클 관리"""
-    # starting...
-    logger.info("🚀 AI 서버 시작")
-    logger.info(f"환경: {settings.DEBUG and 'Development' or 'Production'}")
-    logger.info(f"TensorFlow GPU 사용: {settings.TF_ENABLE_GPU_MEMORY_GROWTH}")
+    """Application lifecycle management"""
+    # Startup
+    logger.info("🚀 AI Server starting")
+    logger.info(f"Environment: {'Development' if settings.DEBUG else 'Production'}")
+    logger.info(f"TensorFlow GPU enabled: {settings.TF_ENABLE_GPU_MEMORY_GROWTH}")
 
     try:
-        # 모델 매니저 싱글톤 인스턴스 생성
+        # Initialize model manager singleton
         model_manager = ModelManager()
 
-        # 모델 로드
-        logger.info("📦 모델 로드 시작...")
+        # Load model
+        logger.info("📦 Starting model load...")
         success = await model_manager.load_model()
 
         if success:
-            logger.info("✅ 모델 로드 완료")
+            logger.info("✅ Model loaded successfully")
             model_info = model_manager.get_model_info()
-            logger.info(f"모델 정보: {model_info}")
+            logger.info(f"Model info: {model_info}")
         else:
-            logger.error("❌ 모델 로드 실패")
-            # 개발 환경에서는 계속 진행, 프로덕션에서는 종료
+            logger.error("❌ Model loading failed")
             if not settings.DEBUG:
-                raise RuntimeError("모델 로드 필수")
+                raise RuntimeError("Model loading is required")
 
     except Exception as e:
-        logger.error(f"❌ 서버 시작 중 오류: {e}")
+        logger.error(f"❌ Server startup error: {e}")
         if not settings.DEBUG:
             raise
 
     yield
 
-    # 종료 시
-    logger.info("🛑 AI 서버 종료")
+    # Shutdown
+    logger.info("🛑 AI Server shutting down")
     try:
         model_manager = ModelManager()
         if model_manager.is_ready():
             model_manager.unload_model()
-            logger.info("모델 언로드 완료")
+            logger.info("Model unloaded successfully")
     except Exception as e:
-        logger.error(f"종료 중 오류: {e}")
+        logger.error(f"Shutdown error: {e}")
 
-# FastAPI 앱 생성
+
+# Create FastAPI app
 app = FastAPI(
     title="Sign Language AI Server",
-    description="수화 인식 AI 서버 - TensorFlow 기반",
+    description="Sign Language Recognition AI Server - TensorFlow based",
     version="1.0.0",
     lifespan=lifespan,
     debug=settings.DEBUG,
 )
 
-# CORS 미들웨어 설정
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -74,20 +78,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 요청 로깅 미들웨어 (개발 환경에서만)
+# Request logging middleware (development only)
 if settings.DEBUG:
 
     @app.middleware("http")
-    async def log_requests(request, call_next):
-        import time
-
+    async def log_requests(request: Request, call_next):
         start_time = time.time()
+
+        # Log request
+        logger.info(f"📥 {request.method} {request.url.path}")
 
         response = await call_next(request)
 
         process_time = time.time() - start_time
         logger.info(
-            f"{request.method} {request.url.path} - "
+            f"📤 {request.method} {request.url.path} - "
             f"Status: {response.status_code} - "
             f"Time: {process_time:.3f}s"
         )
@@ -95,43 +100,66 @@ if settings.DEBUG:
         return response
 
 
-# API 라우터 등록
+# Global exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler"""
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": "Internal server error",
+            "message": "An unexpected error occurred",
+        },
+    )
+
+
+# Register API router
 app.include_router(router, prefix="/api/v1", tags=["AI Analysis"])
 
 
-# 루트 엔드포인트
+# Root endpoint
 @app.get("/", tags=["Root"])
 async def root():
-    """루트 엔드포인트"""
-    model_manager = ModelManager()
+    """Root endpoint"""
+    try:
+        model_manager = ModelManager()
 
-    return {
-        "message": "Sign Language AI Server is running",
-        "version": "1.0.0",
-        "status": "healthy",
-        "model_status": "loaded" if model_manager.is_ready() else "not_loaded",
-        "framework": "TensorFlow",
-        "endpoints": {
-            "health": "/api/v1/health",
-            "analyze": "/api/v1/analyze-frame",
-            "labels": "/api/v1/labels",
-            "model_info": "/api/v1/model-info",
-            "docs": "/docs",
-        },
-    }
+        return {
+            "message": "Sign Language AI Server is running",
+            "version": "1.0.0",
+            "status": "healthy",
+            "model_status": "loaded" if model_manager.is_ready() else "not_loaded",
+            "framework": "TensorFlow",
+            "async_enabled": True,
+            "endpoints": {
+                "health": "/api/v1/health",
+                "analyze": "/api/v1/analyze-frame",
+                "labels": "/api/v1/labels",
+                "model_info": "/api/v1/model-info",
+                "docs": "/docs",
+            },
+        }
+    except Exception as e:
+        logger.error(f"Root endpoint error: {e}")
+        return {
+            "message": "Sign Language AI Server",
+            "status": "error",
+            "error": str(e),
+        }
 
 
-# 개발 서버 실행용 (로컬 테스트용)
+# Development server
 if __name__ == "__main__":
     import uvicorn
 
-    # 환경변수에서 설정 로드
     host = settings.HOST
     port = settings.PORT
     reload = settings.DEBUG
 
-    logger.info(f"개발 서버 시작: http://{host}:{port}")
-    logger.info(f"API 문서: http://{host}:{port}/docs")
+    logger.info(f"Development server starting: http://{host}:{port}")
+    logger.info(f"API documentation: http://{host}:{port}/docs")
 
     uvicorn.run(
         "main:app",
@@ -139,4 +167,5 @@ if __name__ == "__main__":
         port=port,
         reload=reload,
         log_level=settings.LOG_LEVEL.lower(),
+        workers=1,  # Single worker for development
     )
