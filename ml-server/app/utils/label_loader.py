@@ -1,67 +1,68 @@
-# label data loader -> cache or take from S3 bucket
+# utils/label_loader.py
 import json
 import os
-from typing import List, Dict, Any
-from ..config import settings
+from typing import List, Optional
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class LabelLoader:
-    def __init__(self):
-        self._labels_cache = None
+    _instance: Optional["LabelLoader"] = None
+    _labels_cache: Optional[List[str]] = None
 
-    async def load_class_labels(self) -> List[str]:
-        """Load class labels with caching"""
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    async def load_class_labels(self) -> Optional[List[str]]:
+        """Load class labels (with caching)"""
         if self._labels_cache is not None:
             return self._labels_cache
 
         try:
-            labels_data = await self._load_from_local()
+            # Get paths from settings
+            from app.config import settings
 
-            # Extract class list from JSON data
-            if isinstance(labels_data, list):
-                self._labels_cache = labels_data
-            elif isinstance(labels_data, dict) and "labels" in labels_data:
-                self._labels_cache = labels_data["labels"]
-            else:
-                raise ValueError("Invalid label file format")
+            for path in settings.LABEL_PATHS:
+                if os.path.exists(path):
+                    logger.info(f"Loading label file: {path}")
+                    with open(path, "r", encoding="utf-8") as f:
+                        labels_data = json.load(f)
 
-            logger.info(f"Class labels loaded: {len(self._labels_cache)} classes")
-            logger.debug(f"Loaded labels: {self._labels_cache}")
+                    if isinstance(labels_data, list):
+                        self._labels_cache = labels_data
+                        logger.info(
+                            f"Labels loaded successfully: {len(self._labels_cache)} classes"
+                        )
+                        return self._labels_cache
 
+            # Use default labels
+            logger.warning("Label file not found, using default labels")
+            self._labels_cache = [
+                "좋다1",
+                "지시1#",
+                "돕다1",
+                "무엇1",
+                "지시2",
+                "때2",
+                "오늘1",
+                "일하다1",
+                "재미1",
+                "필요1",
+                "회사1",
+                "요리1",
+                "괜찮다1",
+                "잘하다2",
+            ]
             return self._labels_cache
 
         except Exception as e:
-            logger.error(f"Failed to load labels: {str(e)}")
-            return []
-
-    async def _load_from_local(self) -> Dict[str, Any]:
-        """Load labels from local file"""
-        try:
-            if not os.path.exists(settings.CLASS_LABELS_FILE):
-                raise FileNotFoundError(
-                    f"Label file not found: {settings.CLASS_LABELS_FILE}"
-                )
-
-            with open(settings.CLASS_LABELS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load labels from local: {str(e)}")
-            raise
-
-    async def validate_model_compatibility(self, model_num_classes: int) -> bool:
-        """Validate compatibility between model and labels"""
-        labels = await self.load_class_labels()
-        if len(labels) != model_num_classes:
-            logger.warning(
-                f"Model expects {model_num_classes} classes but labels have {len(labels)}"
-            )
-            return False
-        return True
+            logger.error(f"Label loading failed: {e}")
+            return None
 
     def clear_cache(self):
-        """Clear label cache"""
+        """Clear cache"""
         self._labels_cache = None
         logger.info("Label cache cleared")
