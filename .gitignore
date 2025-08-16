@@ -1,3 +1,4 @@
 .env
 .venv
 .venv_py311
+venv

@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  ai-server:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models:ro
+    environment:
+      - DEBUG=false
+      - MODEL_PATH=/ml-server/models/gesture_model.h5
+      - LABELS_PATH=/ml-server/models/label_map.json
+      - BACKEND_URL=http://host.docker.internal:8080
+    restart: unless-stopped
