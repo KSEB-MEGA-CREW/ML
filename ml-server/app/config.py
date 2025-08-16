@@ -8,6 +8,7 @@ load_dotenv()
 
 
 class Settings:
+    """Application settings (S3 dependencies removed)"""
     # Server settings
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8000"))

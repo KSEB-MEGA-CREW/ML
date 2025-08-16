@@ -1,160 +1,191 @@
-# models/model_loader.py
 import tensorflow as tf
-import asyncio
 import os
-from typing import Optional
-from app.utils.s3_client import S3Client
-from app.models.model_cache import ModelCache
-from app.config import settings
+import time
 import logging
+from typing import Optional, List, Dict, Any
+from .label_loader import LabelLoader
 
 logger = logging.getLogger(__name__)
 
 
 class ModelManager:
-    _instance: Optional["ModelManager"] = None
-    _initialized = False
+    """local h5 file and JSON array label model manager"""
 
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __init__(self):
-        if self._initialized:
-            return
-
-        self.model = None
-        self.s3_client = S3Client()
-        self.cache = ModelCache()
+    def __init__(
+        self,
+        model_path: str = "ml-server/models/gesture_model.h5",
+        labels_json_path: str = "ml-server/models/label_map.json",
+    ):
+        self.model_path = model_path
+        self.model: Optional[Any] = None
         self.model_loaded = False
+        self.load_time = None
+
+        # initialize label loader
+        self.label_loader = LabelLoader(labels_json_path)
+
         self._configure_tensorflow()
-        self._initialized = True
 
     def _configure_tensorflow(self):
-        """Configure TensorFlow optimization"""
+        """TensorFlow optimization settings"""
         try:
-            # Enable GPU memory growth
             gpus = tf.config.experimental.list_physical_devices("GPU")
             if gpus:
                 for gpu in gpus:
                     tf.config.experimental.set_memory_growth(gpu, True)
-                logger.info(f"GPU available: {len(gpus)} devices")
+                logger.info(f"GPU: {len(gpus)}")
             else:
-                logger.info("Running in CPU mode")
+                logger.info("CPU mode")
 
-            # Suppress unnecessary logs
             tf.get_logger().setLevel("ERROR")
 
         except Exception as e:
-            logger.warning(f"TensorFlow configuration warning: {e}")
+            logger.warning(f"TensorFlow settings error: {e}")
 
     async def load_model(self) -> bool:
-        """Load model (local files first, S3 as backup)"""
+        """load model and label"""
         if self.model_loaded:
-            logger.info("Model already loaded")
+            logger.info("model loaded")
             return True
 
+        start_time = time.time()
+
         try:
-            # 1. Check local files first
-            local_model_paths = [
-                "/app/models/gesture_model.h5",
-                "./models/gesture_model.h5",
-                "gesture_model.h5",
-            ]
-
-            for local_path in local_model_paths:
-                if os.path.exists(local_path):
-                    logger.info(f"Using local model file: {local_path}")
-                    # load_model() from TensorFlow is not asyn func
-                    loop = asyncio.get_event_loop()
-                    self.model = await loop.run_in_executor(
-                        None, self._load_h5_model, local_path
-                    )
-                    self.model_loaded = True
-                    return True
-
-            # 2. Download from S3
-            logger.info("No local model found, attempting S3 download")
-            model_path = await self._get_model_path()
-            if not model_path:
-                logger.error("Model loading failed")
+            # load label first
+            if not self.label_loader.load_labels():
+                logger.error("label load failed")
                 return False
 
-            loop = asyncio.get_event_loop()
-            self.model = await loop.run_in_executor(
-                None, self._load_h5_model, model_path
-            )
+            logger.info(f"label loaded: {self.label_loader.get_label_list}")
+
+            # check model file and load
+            if not self._find_and_load_model():
+                return False
+
+            # model warm up
+            dummy_input = tf.random.normal((1, 10, 194))
+            _ = self.model(dummy_input, training=False)
 
             self.model_loaded = True
-            logger.info("S3 model loading completed")
+            self.load_time = time.time() - start_time
+
+            logger.info(f"model and label loaded! ({self.load_time} s)")
             return True
 
         except Exception as e:
-            logger.error(f"Error during model loading: {e}")
+            logger.error(f"model loading fail: {e}")
             return False
 
-    def _load_h5_model(self, model_path: str):  # do not be async
-        """Load TensorFlow model"""
+    def _find_and_load_model(self) -> bool:
+        """find and load model file"""
+        model_paths = [
+            self.model_path,
+            "./models/sign_language_model.h5",
+            "models/sign_language_model.h5",
+        ]
+
+        for path in model_paths:
+            if os.path.exists(path):
+                try:
+                    logger.info(f"📦 모델 로딩 시작: {path}")
+
+                    # 파일 크기 확인
+                    file_size_mb = os.path.getsize(path) / (1024 * 1024)
+                    logger.info(f"모델 파일 크기: {file_size_mb:.2f} MB")
+
+                    # 모델 로드
+                    self.model = tf.keras.models.load_model(path, compile=False)
+                    self.model_path = path
+
+                    logger.info(f"model input size: {self.model.input_shape}")
+                    logger.info(f"model output size: {self.model.output_shape}")
+                    logger.info(f"parameter: {self.model.count_params():,}개")
+
+                    return True
+
+                except Exception as e:
+                    logger.error(f"model load failed ({path}): {e}")
+                    continue
+
+        logger.error("can not find model file")
+        return False
+
+    async def predict(self, input_data: tf.Tensor) -> Dict[str, Any]:
+        """model predict"""
+        if not self.is_loaded():
+            raise RuntimeError("model Unloaded")
+
         try:
-            model = tf.keras.models.load_model(model_path, compile=False)
-            logger.info(f"Model loaded successfully: {model_path}")
-            return model
-        except Exception as e:
-            logger.error(f"Keras model loading failed: {e}")
-            raise
+            start_time = time.time()
 
-    async def _get_model_path(self) -> Optional[str]:
-        """Download model from S3"""
-        s3_key = settings.MODEL_S3_KEY
-
-        # Check cache
-        if self.cache.is_cached(s3_key):
-            cache_path = self.cache.get_cache_path(s3_key)
-            logger.info(f"Using cached model: {cache_path}")
-            return cache_path
-
-        # Check S3 file existence
-        if not await self.s3_client.check_file_exists(s3_key):
-            logger.error(f"Model file not found in S3: {s3_key}")
-            return None
-
-        # Download
-        cache_path = self.cache.get_cache_path(s3_key)
-        success = await self.s3_client.download_file(s3_key, cache_path)
-
-        return cache_path if success else None
-
-    def predict(self, input_data):
-        """Model prediction"""
-        if not self.is_ready():
-            raise RuntimeError("Model is not loaded")
-
-        try:
+            # predict
             predictions = self.model(input_data, training=False)
-            return predictions.numpy()
+
+            # predict result
+            predicted_class = int(tf.argmax(predictions[0]))
+            confidence = float(tf.reduce_max(predictions[0]))
+
+            # get label
+            label = self.label_loader.get_label(predicted_class)
+
+            inference_time = time.time() - start_time
+
+            result = {
+                "label": label,
+                "confidence": confidence,
+                "predicted_class": predicted_class,
+                "inference_time": inference_time,
+                "timestamp": time.time(),
+            }
+
+            return result
+
         except Exception as e:
-            logger.error(f"Error during prediction: {e}")
+            logger.error(f"predict failed: {e}")
             raise
 
-    def is_ready(self) -> bool:
-        return self.model_loaded and self.model is not None
+    def is_loaded(self) -> bool:
+        """check loading"""
+        return (
+            self.model_loaded
+            and self.model is not None
+            and self.label_loader.is_loaded()
+        )
 
-    def get_model_info(self) -> dict:
-        if not self.is_ready():
+    def get_model_info(self) -> Dict[str, Any]:
+        """return model and label info"""
+        if not self.is_loaded():
             return {"status": "not_loaded"}
 
         return {
             "status": "loaded",
+            "model_path": self.model_path,
             "input_shape": str(self.model.input_shape),
             "output_shape": str(self.model.output_shape),
             "total_params": self.model.count_params(),
+            "load_time": self.load_time,
+            "file_size_mb": round(os.path.getsize(self.model_path) / (1024 * 1024), 2),
+            "labels": {
+                "total_classes": self.label_loader.get_total_classes(),
+                "metadata": self.label_loader.get_metadata(),
+                "all_labels": self.label_loader.get_label_list(),
+            },
         }
 
+    def get_all_labels(self) -> List[str]:
+        """return all labels"""
+        return self.label_loader.get_label_list()
+
     def unload_model(self):
-        """Unload model"""
+        """model unloaded"""
         if self.model:
             del self.model
             self.model = None
             self.model_loaded = False
-            logger.info("Model unloaded successfully")
+            logger.info("model unloading completed")
+
+    async def reload_model(self) -> bool:
+        """reloading"""
+        logger.info("start reloading")
+        self.unload_model()
+        return await self.load_model()
