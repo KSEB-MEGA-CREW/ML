@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AI 서버 WebSocket 테스트</title>
+  </head>
+  <body>
+    <h1>AI 서버 WebSocket 연결 테스트</h1>
+
+    <div>
+      <label>JWT 토큰:</label>
+      <input
+        type="text"
+        id="token"
+        placeholder="your-jwt-token"
+        style="width: 500px"
+      />
+    </div>
+
+    <div style="margin: 10px 0">
+      <button onclick="connectWebSocket()">연결하기</button>
+      <button onclick="sendTestFrame()">테스트 프레임 전송</button>
+      <button onclick="disconnect()">연결 해제</button>
+    </div>
+
+    <div>
+      <h3>연결 상태:</h3>
+      <div id="status">연결되지 않음</div>
+    </div>
+
+    <div>
+      <h3>수신 메시지:</h3>
+      <div
+        id="messages"
+        style="
+          border: 1px solid #ccc;
+          height: 300px;
+          overflow-y: scroll;
+          padding: 10px;
+        "
+      ></div>
+    </div>
+
+    <script>
+      let ws = null;
+
+      function connectWebSocket() {
+        const token = document.getElementById("token").value;
+        if (!token) {
+          alert("JWT 토큰을 입력하세요");
+          return;
+        }
+
+        const wsUrl = `ws://localhost:8000/ws?token=${encodeURIComponent(
+          token
+        )}`;
+        console.log("🔌 연결 시도:", wsUrl);
+
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = function () {
+          console.log("✅ WebSocket 연결 성공");
+          document.getElementById("status").textContent = "연결됨";
+          document.getElementById("status").style.color = "green";
+          addMessage("✅ 연결 성공");
+        };
+
+        ws.onmessage = function (event) {
+          const data = JSON.parse(event.data);
+          console.log("📥 수신 메시지:", data);
+          addMessage(`📥 수신: ${JSON.stringify(data, null, 2)}`);
+        };
+
+        ws.onclose = function (event) {
+          console.log("🔌 연결 종료:", event.code, event.reason);
+          document.getElementById("status").textContent = "연결 해제됨";
+          document.getElementById("status").style.color = "red";
+          addMessage(`🔌 연결 종료: ${event.code} - ${event.reason}`);
+        };
+
+        ws.onerror = function (error) {
+          console.error("❌ WebSocket 오류:", error);
+          addMessage("❌ 연결 오류 발생");
+        };
+      }
+
+      function sendTestFrame() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          alert("먼저 WebSocket에 연결하세요");
+          return;
+        }
+
+        // 테스트용 키포인트 데이터 (194개 더미 값)
+        const testKeypoints = Array(194).fill(0.5);
+
+        const message = {
+          keypoints: [testKeypoints], // 1프레임
+          frame_index: Date.now(),
+          timestamp: Date.now(),
+        };
+
+        console.log("📤 전송 메시지:", message);
+        ws.send(JSON.stringify(message));
+        addMessage(
+          `📤 전송: 테스트 프레임 (${testKeypoints.length}개 키포인트)`
+        );
+      }
+
+      function disconnect() {
+        if (ws) {
+          ws.close();
+          ws = null;
+        }
+      }
+
+      function addMessage(message) {
+        const messagesDiv = document.getElementById("messages");
+        const messageElement = document.createElement("div");
+        messageElement.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+        messagesDiv.appendChild(messageElement);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
+    </script>
+  </body>
+</html>

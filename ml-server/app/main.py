@@ -76,7 +76,7 @@ async def log_requests(request: Request, call_next):
 
     logger = logging.getLogger(__name__)
     logger.info(
-        f"📥 {request.method} {request.url.path} - {response.status_code} - {process_time:.3f}s"
+        f"🔥 {request.method} {request.url.path} - {response.status_code} - {process_time:.3f}s"
     )
 
     return response
@@ -110,7 +110,29 @@ async def health_check():
     }
 
 
+# Debug endpoint for testing
+@app.get("/debug/sessions")
+async def debug_sessions():
+    """Debug endpoint to check active sessions"""
+    from app.core.session_manager import SessionManager
+    from app.websockets.connection_manager import ConnectionManager
+
+    session_manager = SessionManager()
+    connection_manager = ConnectionManager()
+
+    return {
+        "active_sessions": session_manager.get_active_sessions_count(),
+        "active_connections": connection_manager.get_connection_count(),
+        "sessions": list(session_manager.sessions.keys()),
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app,
+        host=settings.HOST,
+        port=settings.PORT,
+        log_level=settings.LOG_LEVEL.lower(),
+    )

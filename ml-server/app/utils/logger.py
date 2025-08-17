@@ -4,31 +4,29 @@ from app.core.config import settings
 
 
 def setup_logger():
-    """Setup application logging"""
+    """Setup application logging configuration"""
 
     # Create formatter
     formatter = logging.Formatter(
-        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Setup console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(formatter)
-
-    # Configure root logger
+    # Setup root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, settings.LOG_LEVEL))
+
+    # Remove existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
-    # Prevent duplicate logs
-    root_logger.propagate = False
+    # Suppress noisy loggers
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    # Configure specific loggers
-    loggers = ["app", "uvicorn.access", "uvicorn.error"]
-
-    for logger_name in loggers:
-        logger = logging.getLogger(logger_name)
-        logger.setLevel(getattr(logging, settings.LOG_LEVEL))
-        logger.addHandler(console_handler)
-        logger.propagate = False
+    logging.info("✅ Logging configured")

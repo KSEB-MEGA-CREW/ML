@@ -54,7 +54,7 @@ class SessionManager:  # session manager
         logger.info(f"Session created: {session_id} for user: {user_id}")
         return session_id
 
-    def get_session(self, session_id: str, keypoints: list) -> bool:
+    def add_frame(self, session_id: str, keypoints: list) -> bool:
         """add frame to session buffer, if buffer is full => return true"""
         if session_id not in self.sessions:
             return False
@@ -89,3 +89,16 @@ class SessionManager:  # session manager
     def get_active_sessions_count(self) -> int:
         """get number of active sessions for monitoring"""
         return len(self.sessions)
+
+    def get_session_state(self, session_id: str) -> Optional[Dict]:
+        """get session statistics"""
+        if session_id in self.sessions:
+            session = self.sessions[session_id]
+            return {
+                "session_id": session_id,
+                "user_id": session["user_id"],
+                "frame_count": session["frame_count"],
+                "prediction_count": session["prediction_count"],
+                "duration": time.time() - session["created_at"],
+            }
+        return None
