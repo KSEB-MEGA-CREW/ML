@@ -1,0 +1,1 @@
+# declare Websocket message type

@@ -1,4 +1,5 @@
-.env
+.env.*
 .venv
 .venv_py311
 venv
+__pycache__
