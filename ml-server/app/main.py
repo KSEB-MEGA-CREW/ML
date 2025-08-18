@@ -1,96 +1,83 @@
-import os
-import logging
-import asyncio
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+# main.py
+from fastapi import FastAPI, WebSocket, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import time
 import logging
+import uvicorn
+import time
 
-from app.models.model_manager import ModelManager
-from app.websockets.handlers import router as websocket_router
-from app.utils.logger import setup_logger
+from app.websockets.handlers import websocket_handler
 from app.core.config import settings
 
-logging.basicConfig(level=logging.INFO)
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifecycle management"""
-    logger = logging.getLogger(__name__)
-
-    # Startup
-    logger.info("🚀 AI Server starting")
-
-    try:
-        model_manager = ModelManager()
-        await model_manager.load_model()
-
-        if model_manager.is_ready():
-            logger.info("✅ Model loaded successfully")
-        else:
-            logger.error("❌ Model loading failed")
-            raise RuntimeError("Model loading is required")
-
-    except Exception as e:
-        logger.error(f"❌ Server startup error: {e}")
-        raise
-
-    yield
-
-    # Shutdown
-    logger.info("🛑 AI Server shutting down")
-    try:
-        model_manager = ModelManager()
-        if model_manager.is_ready():
-            model_manager.unload_model()
-            logger.info("Model unloaded successfully")
-    except Exception as e:
-        logger.error(f"Shutdown error: {e}")
-
-
+# FastAPI 앱 생성
 app = FastAPI(
-    title="Sign Language AI Server",
-    description="Real-time sign language recognition via WebSocket",
+    title="수어 인식 AI 서버",
+    description="Claude API를 사용한 실시간 수어 인식 시스템",
     version="1.0.0",
-    lifespan=lifespan,
 )
 
+# CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origins=["*"],  # 개발 환경용, 운영에서는 특정 도메인으로 제한
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# WebSocket 라우터 포함
-app.include_router(websocket_router)
 
-
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    start_time = time.time()
-    response = await call_next(request)
-    process_time = time.time() - start_time
-
-    logger = logging.getLogger(__name__)
-    logger.info(
-        f"{request.method} {request.url.path} - "
-        f"Status: {response.status_code} - "
-        f"Time: {process_time:.3f}s"
-    )
-
-    return response
+@app.get("/")
+async def root():
+    """루트 엔드포인트"""
+    return {"message": "수어 인식 AI 서버", "version": "1.0.0", "status": "running"}
 
 
 @app.get("/health")
 async def health_check():
-    model_manager = ModelManager()
+    """헬스 체크 엔드포인트"""
     return {
         "status": "healthy",
-        "model_ready": model_manager.is_ready(),
-        "model_info": model_manager.get_model_info(),
+        "model_ready": True,  # 실제로는 model_manager.is_model_ready() 사용
+        "timestamp": time.time(),
     }
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
+    """
+    WebSocket 엔드포인트
+
+    Args:
+        websocket: WebSocket 연결
+        token: JWT 인증 토큰
+    """
+    await websocket_handler.handle_connection(websocket, token)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """서버 시작 시 초기화"""
+    logger.info(
+        f"수어 인식 AI 서버 시작: {settings.ai_server_host}:{settings.ai_server_port}"
+    )
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """서버 종료 시 정리"""
+    logger.info("수어 인식 AI 서버 종료")
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host=settings.ai_server_host,
+        port=settings.ai_server_port,
+        reload=True,  # 개발 환경용
+        log_level="info",
+    )

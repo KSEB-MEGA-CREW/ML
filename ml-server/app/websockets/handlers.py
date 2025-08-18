@@ -1,136 +1,198 @@
 # process Websocket endpoints and messages
-import logging
-import asyncio
-from collections import deque
-from typing import Dict, List
-from fastapi import WebSocket, WebSocketDisconnect, APIRouter
+from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 import json
-import uuid
+import time
+import logging
+from typing import Dict, Any
 
-from app.models.predictor import SignLanguagePredictor
+from .session_manager import session_manager
+from .message_types import *
+from app.models.model_manager import model_manager
+from app.core.dependencies import verify_token_with_backend
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
 
 
-class WebSocketManager:
+class WebSocketHandler:
     def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}
-        self.session_buffers: Dict[str, deque] = {}
-        self.predictor = SignLanguagePredictor()
+        """WebSocket 핸들러 초기화"""
+        self.session_manager = session_manager
+        self.model_manager = model_manager
 
-    async def connect(self, websocket: WebSocket, session_id: str):
-        await websocket.accept()
-        self.active_connections[session_id] = websocket
-        self.session_buffers[session_id] = deque(maxlen=10)
-        logger.info(f"WebSocket connected: {session_id}")
-
-    def disconnect(self, session_id: str):
-        if session_id in self.active_connections:
-            del self.active_connections[session_id]
-        if session_id in self.session_buffers:
-            del self.session_buffers[session_id]
-        logger.info(f"WebSocket disconnected: {session_id}")
-
-    async def send_message(self, message: dict, session_id: str):
-        if session_id in self.active_connections:
-            await self.active_connections[session_id].send_text(json.dumps(message))
-
-    async def process_keypoints_array(
-        self, session_id: str, keypoints_array: List[List[float]]
-    ) -> bool:
-        """프론트엔드에서 오는 키포인트 배열 처리"""
-        if session_id not in self.session_buffers:
-            return False
-
+    async def handle_connection(self, websocket: WebSocket, token: str):
+        """WebSocket 연결 처리"""
         try:
-            # 각 프레임의 키포인트 개수 확인
-            logger.debug(f"Received {len(keypoints_array)} frames")
-            for i, frame in enumerate(keypoints_array):
-                logger.debug(f"Frame {i}: {len(frame)} keypoints")
+            # 1. 토큰 검증
+            user_id = await verify_token_with_backend(token)
+            if not user_id:
+                await websocket.close(code=4001, reason="Invalid token")
+                return
 
-            # 키포인트 배열을 버퍼에 추가
-            for frame_keypoints in keypoints_array:
-                # 프레임별 키포인트가 194개가 아닐 수 있으므로 패딩 또는 조정
-                if len(frame_keypoints) < 194:
-                    # 부족한 경우 0으로 패딩
-                    padded_keypoints = frame_keypoints + [0.0] * (
-                        194 - len(frame_keypoints)
-                    )
-                elif len(frame_keypoints) > 194:
-                    # 초과한 경우 194개만 사용
-                    padded_keypoints = frame_keypoints[:194]
-                else:
-                    padded_keypoints = frame_keypoints
+            # 2. 세션 ID 생성
+            session_id = f"{user_id}_{int(time.time()*1000)}"
 
-                self.session_buffers[session_id].append(padded_keypoints)
+            # 3. 세션 등록
+            await self.session_manager.connect(websocket, session_id, user_id)
 
-            # 10프레임이 누적되면 예측 수행
-            if len(self.session_buffers[session_id]) >= 10:
-                # 최근 10프레임 사용
-                recent_frames = list(self.session_buffers[session_id])[-10:]
-                logger.info(f"Processing prediction with {len(recent_frames)} frames")
+            # 4. 연결 확인 메시지 전송
+            await self._send_status_message(
+                session_id,
+                "connected",
+                {
+                    "user_id": user_id,
+                    "model_ready": self.model_manager.is_model_ready(),
+                },
+            )
 
-                result = await self.predictor.predict_sequence(recent_frames)
+            # 5. 메시지 루프 시작
+            await self._message_loop(websocket, session_id)
 
-                await self.send_message(result, session_id)
+        except HTTPException as e:
+            logger.warning(f"인증 실패: {e.detail}")
+            await websocket.close(code=4001, reason=e.detail)
 
-                # 버퍼의 절반 클리어 (슬라이딩 윈도우)
-                for _ in range(5):
-                    if len(self.session_buffers[session_id]) > 0:
-                        self.session_buffers[session_id].popleft()
-
-                return True
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket 정상 종료: session_id={session_id}")
 
         except Exception as e:
-            logger.error(f"Keypoints processing error for session {session_id}: {e}")
-            error_message = {
-                "success": False,
-                "error": f"Processing failed: {str(e)}",
-                "prediction": None,
-            }
-            await self.send_message(error_message, session_id)
-            return False
+            logger.error(f"WebSocket 연결 처리 실패: {e}")
+            await websocket.close(code=4000, reason="Internal server error")
 
-        return True
+        finally:
+            if "session_id" in locals():
+                self.session_manager.disconnect(session_id)
 
-
-manager = WebSocketManager()
-
-
-@router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str = None):
-    session_id = str(uuid.uuid4())
-
-    try:
-        await manager.connect(websocket, session_id)
-
+    async def _message_loop(self, websocket: WebSocket, session_id: str):
+        """메시지 처리 루프"""
         while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
+            try:
+                # 메시지 수신
+                message_data = await websocket.receive_text()
+                message_dict = json.loads(message_data)
 
-            if "keypoints" in message:
-                keypoints_array = message["keypoints"]
+                # 메시지 타입별 처리
+                await self._process_message(session_id, message_dict)
 
-                # 데이터 구조 확인 로그
-                print(f"=== 데이터 구조 분석 ===")
-                print(f"keypoints 타입: {type(keypoints_array)}")
-                print(f"keypoints 길이: {len(keypoints_array)}")
-                print(f"첫 번째 요소 타입: {type(keypoints_array[0])}")
-                print(f"첫 번째 요소 길이: {len(keypoints_array[0])}")
-                print(f"첫 번째 요소 샘플: {keypoints_array[0][:5]}...")
-                print(f"========================")
+            except WebSocketDisconnect:
+                break
 
-                # 키포인트 배열 정보 로깅
-                logger.debug(
-                    f"Received keypoints array with {len(keypoints_array)} frames"
+            except json.JSONDecodeError as e:
+                await self._send_error_message(session_id, "INVALID_JSON", str(e))
+
+            except Exception as e:
+                logger.error(f"메시지 처리 실패: session_id={session_id}, error={e}")
+                await self._send_error_message(session_id, "PROCESSING_ERROR", str(e))
+
+    async def _process_message(self, session_id: str, message_dict: Dict[str, Any]):
+        """메시지 타입별 처리"""
+        message_type = message_dict.get("type")
+
+        if message_type == MessageType.KEYPOINTS:
+            await self._handle_keypoints_message(session_id, message_dict)
+        else:
+            await self._send_error_message(
+                session_id, "UNKNOWN_MESSAGE_TYPE", f"Unknown type: {message_type}"
+            )
+
+    async def _handle_keypoints_message(
+        self, session_id: str, message_dict: Dict[str, Any]
+    ):
+        """키포인트 메시지 처리"""
+        try:
+            # 메시지 파싱
+            message = KeypointsMessage(**message_dict)
+
+            # 키포인트 버퍼에 추가
+            is_batch_ready = self.session_manager.add_keypoints(
+                session_id, message.keypoints
+            )
+
+            if is_batch_ready:
+                # 10프레임 배치가 준비되면 예측 수행
+                await self._perform_prediction(session_id, message.frame_index)
+
+        except Exception as e:
+            logger.error(f"키포인트 메시지 처리 실패: {e}")
+            await self._send_error_message(session_id, "KEYPOINTS_ERROR", str(e))
+
+    async def _perform_prediction(self, session_id: str, frame_index: int):
+        """수어 예측 수행"""
+        try:
+            # 배치 키포인트 가져오기
+            batch_keypoints = self.session_manager.get_batch_keypoints(session_id)
+            if not batch_keypoints:
+                return
+
+            # 모델 예측
+            label, confidence = await self.model_manager.predict_sign_language(
+                batch_keypoints
+            )
+
+            # 예측 결과 전송
+            await self._send_prediction_result(
+                session_id, label, confidence, frame_index
+            )
+
+            # Gloss 수집기에 추가
+            gloss_collector = self.session_manager.get_gloss_collector(session_id)
+            sentence = await gloss_collector.add_prediction(label, confidence)
+
+            # 문장이 생성되었으면 전송
+            if sentence:
+                await self._send_sentence_generated(
+                    session_id, sentence, list(gloss_collector.glosses)
                 )
 
-                # 키포인트 배열 처리
-                await manager.process_keypoints_array(session_id, keypoints_array)
+        except Exception as e:
+            logger.error(f"예측 수행 실패: session_id={session_id}, error={e}")
+            await self._send_error_message(session_id, "PREDICTION_ERROR", str(e))
 
-    except WebSocketDisconnect:
-        manager.disconnect(session_id)
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        manager.disconnect(session_id)
+    async def _send_prediction_result(
+        self, session_id: str, label: str, confidence: float, frame_index: int
+    ):
+        """예측 결과 전송"""
+        message = PredictionResultMessage(
+            session_id=session_id,
+            label=label,
+            confidence=confidence,
+            frame_index=frame_index,
+            timestamp=time.time(),
+        )
+        await self.session_manager.send_to_session(session_id, message.dict())
+
+    async def _send_sentence_generated(
+        self, session_id: str, sentence: str, glosses: List[str]
+    ):
+        """문장 생성 결과 전송"""
+        message = SentenceGeneratedMessage(
+            session_id=session_id,
+            sentence=sentence,
+            glosses=glosses,
+            timestamp=time.time(),
+        )
+        await self.session_manager.send_to_session(session_id, message.dict())
+
+    async def _send_error_message(
+        self, session_id: str, error_code: str, error_message: str
+    ):
+        """에러 메시지 전송"""
+        message = ErrorMessage(
+            session_id=session_id,
+            error_code=error_code,
+            error_message=error_message,
+            timestamp=time.time(),
+        )
+        await self.session_manager.send_to_session(session_id, message.dict())
+
+    async def _send_status_message(
+        self, session_id: str, status: str, details: dict = None
+    ):
+        """상태 메시지 전송"""
+        message = StatusMessage(
+            session_id=session_id, status=status, details=details, timestamp=time.time()
+        )
+        await self.session_manager.send_to_session(session_id, message.dict())
+
+
+# 핸들러 인스턴스
+websocket_handler = WebSocketHandler()
