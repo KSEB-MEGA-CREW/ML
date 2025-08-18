@@ -12,12 +12,12 @@ class SignLanguagePredictor:
         self.model_manager = ModelManager()
 
     async def predict_sequence(self, keypoints_sequence: List[List[float]]) -> Dict:
-        """Predict sign language from 10-frame keypoints sequence"""
+        """10프레임 키포인트 시퀀스로부터 수화 예측"""
         try:
             if not self.model_manager.is_ready():
                 raise RuntimeError("Model not ready")
 
-            # Validate input
+            # 입력 검증
             if len(keypoints_sequence) != 10:
                 raise ValueError(f"Expected 10 frames, got {len(keypoints_sequence)}")
 
@@ -27,7 +27,7 @@ class SignLanguagePredictor:
                         f"Frame {i}: expected 194 keypoints, got {len(frame)}"
                     )
 
-            # Make prediction
+            # 모델 예측 수행
             result = self.model_manager.predict(keypoints_sequence)
 
             logger.info(
@@ -37,8 +37,9 @@ class SignLanguagePredictor:
             return {
                 "success": True,
                 "prediction": result,
-                "timestamp": np.datetime64("now").astype(int)
-                / 1000000,  # microseconds to seconds
+                "timestamp": int(
+                    np.datetime64("now").astype("datetime64[ms]").astype(int)
+                ),
             }
 
         except Exception as e:

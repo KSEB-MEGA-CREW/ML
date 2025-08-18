@@ -1,10 +1,10 @@
-import os
-import json
 import logging
-from typing import Optional, Dict, List
-import tensorflow as tf
-import keras
 import numpy as np
+import tensorflow as tf
+from typing import List, Dict, Optional
+import json
+import os
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -14,91 +14,99 @@ class ModelManager:
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(ModelManager, cls).__new__(cls)
-            cls._instance._initialized = False
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
-        if self._initialized:
-            return
-
-        self.model = None
-        self.labels = None
-        self.is_loaded = False
-        self._initialized = True
-
-        logger.info("ModelManager initialized")
+        if not hasattr(self, "initialized"):
+            self.model: Optional[tf.keras.Model] = None
+            self.labels: Optional[Dict] = None
+            self.is_loaded = False
+            self.initialized = True
 
     async def load_model(self) -> bool:
-        """load tensorflow model and lables from local files"""
+        """Load TensorFlow model and labels"""
         try:
-            from app.core.config import settings
+            # 실제 파일 경로로 수정
+            model_path = os.path.join("models", "gesture_model.h5")
+            labels_path = os.path.join("models", "label_map.json")
 
-            # load labels first
-            if not os.path.exists(settings.LABELS_PATH):
-                logger.error(f"label file not found: {settings.LABELS_PATH}")
-                return False
+            # 파일 존재 확인
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"Model file not found: {model_path}")
 
-            with open(settings.LABELS_PATH, "r", encoding="utf-8") as f:
-                self.labels = json.load(f)
+            if not os.path.exists(labels_path):
+                raise FileNotFoundError(f"Labels file not found: {labels_path}")
 
-            # load model
-            if not os.path.exists(settings.MODEL_PATH):
-                logger.error(f"model file not found: {settings.MODEL_PATH}")
-                return False
+            logger.info(f"Loading model from: {model_path}")
+            logger.info(f"Loading labels from: {labels_path}")
 
-            logger.info(f"loading model from: {settings.MODEL_PATH}")
-            self.model = keras.models.load_model(settings.MODEL_PATH)
+            # 모델 로딩
+            self.model = tf.keras.models.load_model(model_path)
+
+            # 라벨 로딩 - 배열을 인덱스:라벨 딕셔너리로 변환
+            with open(labels_path, "r", encoding="utf-8") as f:
+                label_list = json.load(f)
+
+            # 배열을 딕셔너리로 변환 (인덱스 -> 라벨)
+            self.labels = {str(i): label for i, label in enumerate(label_list)}
 
             self.is_loaded = True
 
             logger.info(
-                f"model and label loaded successfully. input shape: {self.model.input_shape}"
+                f"✅ Model loaded successfully. "
+                f"Input shape: {self.model.input_shape}, "
+                f"Output shape: {self.model.output_shape}, "
+                f"Labels: {len(self.labels)} classes"
             )
+
+            # 로딩된 라벨들 출력
+            logger.info(f"Available labels: {list(self.labels.values())}")
 
             return True
 
         except Exception as e:
-            logger.error(f"model loading failed: {e}")
+            logger.error(f"❌ Model loading failed: {e}")
+            logger.error(f"Current working directory: {os.getcwd()}")
+            logger.error(
+                f"Files in models/: {os.listdir('models') if os.path.exists('models') else 'models directory not found'}"
+            )
             self.is_loaded = False
             return False
 
     def predict(self, keypoints_sequence: List[List[float]]) -> Dict:
-        """predict sign language from keypoints sequence"""
+        """모델 예측: 확률 벡터 출력 후 argmax로 클래스 선택"""
         if not self.is_loaded or self.model is None:
-            raise RuntimeError("model not loaded")
+            raise RuntimeError("Model not loaded")
 
         try:
-            # convert to numpy array and reshape for model input
-            # expected input shape: (1, 10, 194)
+            # (1, 10, 194) 형태로 변환
             features = np.array(keypoints_sequence).reshape(1, 10, 194)
 
-            # predict
-            predictions = self.model.predict(features, verbose=0)
+            # 모델 예측 - 확률 벡터 반환
+            probability_vector = self.model.predict(features, verbose=0)
 
-            # get predicted class and confidence
-            predicted_class = np.argmax(predictions[0])
-            confidence = float(predictions[0][predicted_class])
+            # argmax로 최대 확률의 인덱스 찾기
+            predicted_class_index = np.argmax(probability_vector[0])
+            confidence = float(probability_vector[0][predicted_class_index])
 
-            # get label
-            label = self.labels.get(str(predicted_class), "Unknown")
+            # 라벨 매핑
+            label = self.labels.get(str(predicted_class_index), "Unknown")
 
             return {
                 "label": label,
                 "confidence": confidence,
-                "class_id": int(predicted_class),
+                "class_id": int(predicted_class_index),
             }
 
         except Exception as e:
-            logger.error(f"prediction error: {e}")
+            logger.error(f"Prediction error: {e}")
             raise
 
     def is_ready(self) -> bool:
-        """Check if model is ready for predictions"""
         return self.is_loaded and self.model is not None
 
     def unload_model(self):
-        """Unload model from memory"""
         if self.model is not None:
             del self.model
             self.model = None
@@ -111,7 +119,6 @@ class ModelManager:
         logger.info("Model unloaded")
 
     def get_model_info(self) -> Dict:
-        """Get model information"""
         if not self.is_loaded:
             return {"status": "not_loaded"}
 
@@ -120,4 +127,5 @@ class ModelManager:
             "input_shape": str(self.model.input_shape) if self.model else None,
             "output_shape": str(self.model.output_shape) if self.model else None,
             "num_classes": len(self.labels) if self.labels else 0,
+            "labels": list(self.labels.values()) if self.labels else [],
         }
