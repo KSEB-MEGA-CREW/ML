@@ -35,32 +35,61 @@ class WebSocketManager:
         if session_id in self.active_connections:
             await self.active_connections[session_id].send_text(json.dumps(message))
 
-    async def process_frame(self, session_id: str, keypoints: List[float]) -> bool:
-        """10프레임 누적 후 예측 수행"""
+    async def process_keypoints_array(
+        self, session_id: str, keypoints_array: List[List[float]]
+    ) -> bool:
+        """프론트엔드에서 오는 키포인트 배열 처리"""
         if session_id not in self.session_buffers:
             return False
 
-        self.session_buffers[session_id].append(keypoints)
+        try:
+            # 각 프레임의 키포인트 개수 확인
+            logger.debug(f"Received {len(keypoints_array)} frames")
+            for i, frame in enumerate(keypoints_array):
+                logger.debug(f"Frame {i}: {len(frame)} keypoints")
 
-        if len(self.session_buffers[session_id]) == 10:
-            try:
-                keypoints_sequence = list(self.session_buffers[session_id])
-                result = await self.predictor.predict_sequence(keypoints_sequence)
+            # 키포인트 배열을 버퍼에 추가
+            for frame_keypoints in keypoints_array:
+                # 프레임별 키포인트가 194개가 아닐 수 있으므로 패딩 또는 조정
+                if len(frame_keypoints) < 194:
+                    # 부족한 경우 0으로 패딩
+                    padded_keypoints = frame_keypoints + [0.0] * (
+                        194 - len(frame_keypoints)
+                    )
+                elif len(frame_keypoints) > 194:
+                    # 초과한 경우 194개만 사용
+                    padded_keypoints = frame_keypoints[:194]
+                else:
+                    padded_keypoints = frame_keypoints
+
+                self.session_buffers[session_id].append(padded_keypoints)
+
+            # 10프레임이 누적되면 예측 수행
+            if len(self.session_buffers[session_id]) >= 10:
+                # 최근 10프레임 사용
+                recent_frames = list(self.session_buffers[session_id])[-10:]
+                logger.info(f"Processing prediction with {len(recent_frames)} frames")
+
+                result = await self.predictor.predict_sequence(recent_frames)
 
                 await self.send_message(result, session_id)
-                self.session_buffers[session_id].clear()
+
+                # 버퍼의 절반 클리어 (슬라이딩 윈도우)
+                for _ in range(5):
+                    if len(self.session_buffers[session_id]) > 0:
+                        self.session_buffers[session_id].popleft()
 
                 return True
 
-            except Exception as e:
-                logger.error(f"Prediction error for session {session_id}: {e}")
-                error_message = {
-                    "success": False,
-                    "error": f"Prediction failed: {str(e)}",
-                    "prediction": None,
-                }
-                await self.send_message(error_message, session_id)
-                return False
+        except Exception as e:
+            logger.error(f"Keypoints processing error for session {session_id}: {e}")
+            error_message = {
+                "success": False,
+                "error": f"Processing failed: {str(e)}",
+                "prediction": None,
+            }
+            await self.send_message(error_message, session_id)
+            return False
 
         return True
 
@@ -80,17 +109,24 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
             message = json.loads(data)
 
             if "keypoints" in message:
-                keypoints = message["keypoints"]
+                keypoints_array = message["keypoints"]
 
-                if len(keypoints) != 194:
-                    error_msg = {
-                        "success": False,
-                        "error": f"Invalid keypoints length: {len(keypoints)}, expected 194",
-                    }
-                    await manager.send_message(error_msg, session_id)
-                    continue
+                # 데이터 구조 확인 로그
+                print(f"=== 데이터 구조 분석 ===")
+                print(f"keypoints 타입: {type(keypoints_array)}")
+                print(f"keypoints 길이: {len(keypoints_array)}")
+                print(f"첫 번째 요소 타입: {type(keypoints_array[0])}")
+                print(f"첫 번째 요소 길이: {len(keypoints_array[0])}")
+                print(f"첫 번째 요소 샘플: {keypoints_array[0][:5]}...")
+                print(f"========================")
 
-                await manager.process_frame(session_id, keypoints)
+                # 키포인트 배열 정보 로깅
+                logger.debug(
+                    f"Received keypoints array with {len(keypoints_array)} frames"
+                )
+
+                # 키포인트 배열 처리
+                await manager.process_keypoints_array(session_id, keypoints_array)
 
     except WebSocketDisconnect:
         manager.disconnect(session_id)

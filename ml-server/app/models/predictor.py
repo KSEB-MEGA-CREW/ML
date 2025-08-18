@@ -30,16 +30,16 @@ class SignLanguagePredictor:
             # 모델 예측 수행
             result = self.model_manager.predict(keypoints_sequence)
 
-            logger.info(
-                f"Prediction: {result['label']} (confidence: {result['confidence']:.3f})"
-            )
+            
+            # 명확한 라벨 출력 추가
+            logger.info(f"🎯 예측 결과: {result['label']} (신뢰도: {result['confidence']:.3f})")
 
             return {
                 "success": True,
                 "prediction": result,
                 "timestamp": int(
                     np.datetime64("now").astype("datetime64[ms]").astype(int)
-                ),
+                )
             }
 
         except Exception as e:

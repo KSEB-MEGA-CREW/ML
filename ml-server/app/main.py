@@ -6,11 +6,14 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import time
+import logging
 
 from app.models.model_manager import ModelManager
 from app.websockets.handlers import router as websocket_router
 from app.utils.logger import setup_logger
 from app.core.config import settings
+
+logging.basicConfig(level=logging.INFO)
 
 
 @asynccontextmanager
