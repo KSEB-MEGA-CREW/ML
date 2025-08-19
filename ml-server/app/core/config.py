@@ -1,10 +1,25 @@
 # app/core/config.py
-from pydantic_settings import BaseSettings
-from typing import Optional
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Optional, List
 import os
 
 
 class Settings(BaseSettings):
+    """
+    환경 변수를 관리하는 Pydantic 설정 클래스입니다.
+    애플리케이션의 모든 구성 정보를 중앙에서 관리합니다.
+    """
+
+    # Pydantic v2 설정: Config 클래스 대신 model_config 사용
+    model_config = SettingsConfigDict(
+        env_file=(
+            ".env.dev"
+            if os.getenv("ENVIRONMENT", "development") == "development"
+            else ".env.prod"
+        ),
+        protected_namespaces=("settings_",),
+    )
+
     # Claude API 설정
     claude_api_key: str
     claude_model: str = "claude-3-haiku-20240307"
@@ -38,7 +53,18 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file_path: Optional[str] = None
 
+    # 이전 로그에서 발생한 오류를 해결하기 위해 추가된 필드들
+    debug: Optional[bool] = False
+    model_path: str = "./models/gesture_model.h5"
+    labels_path: str = "./models/label_map.json"
+    backend_token_verify_endpoint: str = "/api/auth/verify-token"
+    allowed_origins: List[str] = ["*"]
+    frame_buffer_size: int = 10
+
     def __init__(self, **kwargs):
+        """
+        Pydantic 유효성 검사 후에 동적 URL을 생성합니다.
+        """
         super().__init__(**kwargs)
         self._build_dynamic_urls()
 
@@ -84,13 +110,6 @@ class Settings(BaseSettings):
     @property
     def is_development(self) -> bool:
         return self.environment == "development"
-
-    class Config:
-        env_file = (
-            ".env.dev"
-            if os.getenv("ENVIRONMENT", "development") == "development"
-            else ".env.prod"
-        )
 
 
 settings = Settings()

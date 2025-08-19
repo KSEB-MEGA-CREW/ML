@@ -7,6 +7,7 @@ import time
 
 from app.websockets.handlers import websocket_handler
 from app.core.config import settings
+from app.models.model_manager import ModelManager
 
 # 로깅 설정
 logging.basicConfig(
@@ -30,6 +31,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 전역 모델 매니저 인스턴스
+model_manager = ModelManager()
+
 
 @app.get("/")
 async def root():
@@ -42,7 +46,8 @@ async def health_check():
     """헬스 체크 엔드포인트"""
     return {
         "status": "healthy",
-        "model_ready": True,  # 실제로는 model_manager.is_model_ready() 사용
+        "model_ready": model_manager.is_ready(),  # ✅ 실제 모델 상태 확인
+        "model_info": model_manager.get_model_info(),
         "timestamp": time.time(),
     }
 
@@ -66,11 +71,25 @@ async def startup_event():
         f"수어 인식 AI 서버 시작: {settings.ai_server_host}:{settings.ai_server_port}"
     )
 
+    # ✅ 모델 로딩
+    logger.info("모델 로딩 시작...")
+    success = await model_manager.load_model()
+
+    if success:
+        logger.info("✅ 모델 로딩 완료")
+        model_info = model_manager.get_model_info()
+        logger.info(f"모델 정보: {model_info}")
+    else:
+        logger.error("❌ 모델 로딩 실패")
+        raise RuntimeError("모델 로딩에 실패했습니다. 서버를 시작할 수 없습니다.")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """서버 종료 시 정리"""
     logger.info("수어 인식 AI 서버 종료")
+    # ✅ 모델 메모리 해제
+    model_manager.unload_model()
 
 
 if __name__ == "__main__":

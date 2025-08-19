@@ -1,12 +1,15 @@
-# manage dependencies
 # app/core/dependencies.py
 from fastapi import Depends, HTTPException
 import aioredis
 import httpx
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Annotated
 from .config import settings
+from app.services.auth_service import token_verifier
+from app.services.claude_service import claude_service
+from app.models.model_manager import ModelManager
+from app.models.predictor import SignLanguagePredictor
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +29,13 @@ class ConnectionManager:
             async with self._redis_lock:
                 if self.redis_pool is None:
                     try:
+                        # Redis URL이 설정되지 않은 경우 기본값 사용
+                        redis_url = getattr(
+                            settings, "redis_url", "redis://localhost:6379/0"
+                        )
+
                         self.redis_pool = await aioredis.from_url(
-                            settings.redis_url,
+                            redis_url,
                             encoding="utf-8",
                             decode_responses=True,
                             max_connections=20,
@@ -38,13 +46,12 @@ class ConnectionManager:
 
                         # 연결 테스트
                         await self.redis_pool.ping()
-                        logger.info(f"Redis 연결 성공: {settings.redis_url}")
+                        logger.info(f"Redis 연결 성공: {redis_url}")
 
                     except Exception as e:
-                        logger.error(f"Redis 연결 실패: {e}")
-                        raise HTTPException(
-                            status_code=503, detail="Redis service unavailable"
-                        )
+                        logger.warning(f"Redis 연결 실패 (선택사항): {e}")
+                        # Redis 없이도 동작하도록 None 유지
+                        self.redis_pool = None
 
         return self.redis_pool
 
@@ -82,7 +89,7 @@ connection_manager = ConnectionManager()
 
 
 # 의존성 주입 함수들
-async def get_redis() -> aioredis.Redis:
+async def get_redis() -> Optional[aioredis.Redis]:
     """Redis 의존성 주입"""
     return await connection_manager.get_redis()
 
@@ -93,32 +100,21 @@ async def get_http_client() -> httpx.AsyncClient:
 
 
 async def verify_token_with_backend(token: str) -> str:
-    """백엔드 서버에서 JWT 토큰 검증 (동적 URL 사용)"""
-    http_client = await get_http_client()
-
-    verify_url = f"{settings.backend_url}/api/verify-token"
-
+    """백엔드 서버에서 JWT 토큰 검증"""
     try:
-        response = await http_client.post(
-            verify_url, json={"token": token}, timeout=5.0
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            user_id = data.get("user_id")
-            if not user_id:
-                raise HTTPException(status_code=401, detail="Invalid token response")
-            return str(user_id)
+        user_id = await token_verifier.verify_token(token)
+        if user_id:
+            return user_id
         else:
-            logger.warning(f"토큰 검증 실패: status={response.status_code}")
             raise HTTPException(status_code=401, detail="Invalid token")
 
-    except httpx.RequestError as e:
-        logger.error(f"백엔드 서비스 연결 실패: {e}")
-        raise HTTPException(status_code=503, detail="Backend service unavailable")
-    except httpx.TimeoutException:
-        logger.error("백엔드 서비스 타임아웃")
-        raise HTTPException(status_code=504, detail="Backend service timeout")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"토큰 검증 중 오류: {e}")
+        raise HTTPException(
+            status_code=503, detail="Token verification service unavailable"
+        )
 
 
 async def check_backend_health() -> bool:
@@ -139,9 +135,38 @@ async def check_redis_health() -> bool:
     """Redis 서비스 상태 확인"""
     try:
         redis = await get_redis()
-        await redis.ping()
-        return True
+        if redis:
+            await redis.ping()
+            return True
+        return False
 
     except Exception as e:
         logger.error(f"Redis 헬스체크 실패: {e}")
         return False
+
+
+def get_model_manager() -> ModelManager:
+    """모델 매니저 의존성 주입"""
+    return ModelManager()
+
+
+def get_predictor() -> SignLanguagePredictor:
+    """예측기 의존성 주입"""
+    return SignLanguagePredictor()
+
+
+def get_claude_service():
+    """Claude 서비스 의존성 주입"""
+    return claude_service
+
+
+def get_token_verifier():
+    """토큰 검증기 의존성 주입"""
+    return token_verifier
+
+
+# 타입 어노테이션 별칭
+ModelManagerDep = Annotated[ModelManager, Depends(get_model_manager)]
+PredictorDep = Annotated[SignLanguagePredictor, Depends(get_predictor)]
+ClaudeServiceDep = Annotated[object, Depends(get_claude_service)]
+TokenVerifierDep = Annotated[object, Depends(get_token_verifier)]
