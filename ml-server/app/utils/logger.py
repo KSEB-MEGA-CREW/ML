@@ -1,32 +1,34 @@
 import logging
 import sys
-from app.core.config import settings
+from typing import Optional
 
 
-def setup_logger():
-    """Setup application logging configuration"""
+def setup_logger(
+    name: str, level: str = "INFO", log_file: Optional[str] = None
+) -> logging.Logger:
+    """로거 설정"""
 
-    # Create formatter
+    logger = logging.getLogger(name)
+    logger.setLevel(getattr(logging, level.upper()))
+
+    # 핸들러가 이미 있으면 제거
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+
+    # 포맷터 설정
     formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
 
-    # Setup root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(getattr(logging, settings.LOG_LEVEL))
-
-    # Remove existing handlers
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-
-    # Console handler
+    # 콘솔 핸들러
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
+    logger.addHandler(console_handler)
 
-    # Suppress noisy loggers
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    # 파일 핸들러 (선택사항)
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
 
-    logging.info("✅ Logging configured")
+    return logger

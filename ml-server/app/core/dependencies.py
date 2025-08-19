@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Optional, Annotated
 from .config import settings
-from app.services.auth_service import token_verifier
+from app.core.dependencies import get_token_verifier
 from app.services.claude_service import claude_service
 from app.models.model_manager import ModelManager
 from app.models.predictor import SignLanguagePredictor

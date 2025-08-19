@@ -8,6 +8,7 @@ import numpy as np
 class MessageType(str, Enum):
     """WebSocket 메시지 타입"""
 
+    REGISTER_SESSION = "register_session"
     START_TRANSLATION = "start_translation"
     STOP_TRANSLATION = "stop_translation"
     KEYPOINTS = "keypoints"
@@ -15,6 +16,14 @@ class MessageType(str, Enum):
     SENTENCE_GENERATED = "sentence_generated"
     ERROR = "error"
     STATUS = "status"
+
+
+class RegisterSessionMessage(BaseModel):
+    """세션 등록 메시지"""
+
+    type: MessageType = MessageType.REGISTER_SESSION
+    session_id: str
+    timestamp: float
 
 
 class KeypointsMessage(BaseModel):

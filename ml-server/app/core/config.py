@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     claude_api_key: str
     claude_model: str = "claude-3-haiku-20240307"
     claude_max_tokens: int = 200
+    claude_enabled: bool = True  # Claude API 사용 여부
+    
+    # 백업 번역 설정
+    use_local_translator: bool = True  # 로컬 번역 사용 여부
+    local_translator_only: bool = False  # 로컬 번역만 사용 (Claude 비활성화)
 
     # 서버 설정
     ai_server_host: str = "0.0.0.0"
