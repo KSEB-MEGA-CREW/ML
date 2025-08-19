@@ -73,12 +73,8 @@ class ModelManager:
 
         # 기본 경로들 검색
         possible_paths = [
-            "./models/sign_language_model.h5",
-            "./models/sign_language_model.keras",
-            "./models/sign_language_model",
-            "../models/sign_language_model.h5",
-            "../../models/sign_language_model.h5",
-            os.getenv("MODEL_PATH", "./models/sign_language_model.h5"),
+            "../ml-server/models/gesture_model.h5",
+            os.getenv("MODEL_PATH", "../ml-server/models/gesture_model.h5"),
         ]
 
         for path in possible_paths:
@@ -112,11 +108,10 @@ class ModelManager:
     def _load_class_labels(self, model_path: str) -> list:
         """클래스 레이블 파일 로드"""
         try:
-            base_path = Path(model_path).parent
+            # base_path = Path(model_path).parent
             label_files = [
-                base_path / "class_labels.txt",
-                base_path / "labels.txt",
-                base_path / "classes.txt",
+                Path("ml-server/models/label_map.json"),
+                Path("models/label_map.json"),  # 상대 경로
             ]
 
             for label_file in label_files:
