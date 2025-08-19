@@ -140,7 +140,7 @@ class GlossCollector:
         glosses_list = list(self.glosses)
         logger.info(f"문장 생성 시작: {glosses_list}")
 
-        # 1차: Claude API 시도 (사용 가능한 경우)
+        # 1차: Claude API 시도 (사용 가능한 경우만)
         if self.claude_api_available:
             try:
                 sentence = await claude_service.translate_glosses_to_korean(
@@ -167,10 +167,14 @@ class GlossCollector:
                         f"Claude API 연속 {self.max_claude_failures}회 실패 - 로컬 번역으로 전환"
                     )
 
-        # 2차: 로컬 번역 시도
+        # ✅ 2차: 로컬 번역 시도 (반드시 실행되도록 보장)
         if self.use_local_fallback:
             try:
-                logger.info("로컬 번역 서비스 사용")
+                logger.info("🔄 로컬 번역 서비스 사용")
+
+                # local_translator import 확인
+                from .local_translator import local_translator
+
                 sentence = await local_translator.translate_glosses_to_korean(
                     glosses_list
                 )
@@ -179,12 +183,14 @@ class GlossCollector:
                 self.glosses.clear()
                 self.last_gloss_time = time.time()
 
+                logger.info(f"✅ 로컬 번역 완료: {sentence}")
                 return sentence
 
             except Exception as e:
                 logger.error(f"로컬 번역 실패: {e}")
+                logger.exception("로컬 번역 상세 오류:")
 
-        # 3차: 최종 백업 (단순 조합)
+        # ✅ 3차: 최종 백업 (단순 조합)
         logger.warning("모든 번역 서비스 실패 - 단순 조합 사용")
         sentence = " ".join(glosses_list)
         self.glosses.clear()
