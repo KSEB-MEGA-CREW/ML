@@ -10,6 +10,7 @@ from app.core.dependencies import get_token_verifier
 from app.services.claude_service import claude_service
 from app.models.model_manager import ModelManager
 from app.models.predictor import SignLanguagePredictor
+from app.core.security import TokenVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ async def get_http_client() -> httpx.AsyncClient:
 async def verify_token_with_backend(token: str) -> str:
     """백엔드 서버에서 JWT 토큰 검증"""
     try:
-        user_id = await token_verifier.verify_token(token)
+        user_id = get_token_verifier(token)
         if user_id:
             return user_id
         else:
@@ -162,7 +163,7 @@ def get_claude_service():
 
 def get_token_verifier():
     """토큰 검증기 의존성 주입"""
-    return token_verifier
+    return TokenVerifier
 
 
 # 타입 어노테이션 별칭
