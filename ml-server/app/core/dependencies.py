@@ -6,11 +6,10 @@ import asyncio
 import logging
 from typing import Optional, Annotated
 from .config import settings
-from app.core.dependencies import get_token_verifier
+from .security import TokenVerifier
 from app.services.claude_service import claude_service
 from app.models.model_manager import ModelManager
 from app.models.predictor import SignLanguagePredictor
-from app.core.security import TokenVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +29,6 @@ class ConnectionManager:
             async with self._redis_lock:
                 if self.redis_pool is None:
                     try:
-                        # Redis URL이 설정되지 않은 경우 기본값 사용
                         redis_url = getattr(
                             settings, "redis_url", "redis://localhost:6379/0"
                         )
@@ -45,13 +43,11 @@ class ConnectionManager:
                             socket_timeout=5,
                         )
 
-                        # 연결 테스트
                         await self.redis_pool.ping()
                         logger.info(f"Redis 연결 성공: {redis_url}")
 
                     except Exception as e:
                         logger.warning(f"Redis 연결 실패 (선택사항): {e}")
-                        # Redis 없이도 동작하도록 None 유지
                         self.redis_pool = None
 
         return self.redis_pool
@@ -103,7 +99,7 @@ async def get_http_client() -> httpx.AsyncClient:
 async def verify_token_with_backend(token: str) -> str:
     """백엔드 서버에서 JWT 토큰 검증"""
     try:
-        user_id = get_token_verifier(token)
+        user_id = await TokenVerifier.verify_token(token)
         if user_id:
             return user_id
         else:
@@ -122,7 +118,7 @@ async def check_backend_health() -> bool:
     """백엔드 서비스 상태 확인"""
     try:
         http_client = await get_http_client()
-        health_url = f"{settings.backend_url}/health"
+        health_url = f"{settings.BACKEND_URL}/health"
 
         response = await http_client.get(health_url, timeout=3.0)
         return response.status_code == 200
@@ -161,13 +157,15 @@ def get_claude_service():
     return claude_service
 
 
-def get_token_verifier():
+def get_token_verifier() -> TokenVerifier:
     """토큰 검증기 의존성 주입"""
-    return TokenVerifier
+    return TokenVerifier()
 
 
 # 타입 어노테이션 별칭
 ModelManagerDep = Annotated[ModelManager, Depends(get_model_manager)]
 PredictorDep = Annotated[SignLanguagePredictor, Depends(get_predictor)]
 ClaudeServiceDep = Annotated[object, Depends(get_claude_service)]
-TokenVerifierDep = Annotated[object, Depends(get_token_verifier)]
+TokenVerifierDep = Annotated[TokenVerifier, Depends(get_token_verifier)]
+RedisDep = Annotated[Optional[aioredis.Redis], Depends(get_redis)]
+HttpClientDep = Annotated[httpx.AsyncClient, Depends(get_http_client)]

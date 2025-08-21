@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class GlossCollector:
     def __init__(
         self,
-        confidence_threshold: float = 0.8,  # confidence_threshold 0.8로 하향
+        confidence_threshold: float = 0.95,  # confidence_threshold 0.8로 하향
         max_glosses: int = 100,
         timeout_seconds: int = 5,
         use_local_fallback: bool = True,  # 로컬 백업 사용 여부
@@ -21,7 +21,7 @@ class GlossCollector:
         Gloss 수집기 초기화
 
         Args:
-            confidence_threshold: 신뢰도 임계값 (0.8+)
+            confidence_threshold: 신뢰도 임계값 (0.95+)
             max_glosses: 최대 수집할 gloss 개수
             timeout_seconds: 타임아웃 시간 (초)
             use_local_fallback: Claude API 실패 시 로컬 번역 사용 여부

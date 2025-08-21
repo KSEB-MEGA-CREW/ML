@@ -1,4 +1,5 @@
 # app/services/claude_service.py
+import re
 import asyncio
 import logging
 from typing import List, Optional
