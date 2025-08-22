@@ -1,6 +1,7 @@
 # main.py
-from fastapi import FastAPI, WebSocket, Query
+from fastapi import FastAPI, WebSocket, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.websockets import WebSocketDisconnect
 from contextlib import asynccontextmanager
 import logging
 import uvicorn
@@ -20,41 +21,37 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """애플리케이션 라이프사이클 관리"""
-    # 시작 시 초기화
     logger.info("🚀 AI 서버 시작 중...")
 
-    # 모델 로딩 (동기적으로 완료 대기)
+    # 모델 로딩
     model_loaded = await model_manager.load_model()
     if not model_loaded:
-        logger.error("❌ 모델 로딩 실패 - 서버 시작 중단")
+        logger.error("❌ 모델 로딩 실패")
         raise RuntimeError("Model loading failed")
 
-    logger.info(f"🌐 서버 실행: {settings.ai_server_host}:{settings.ai_server_port}")
-
-    yield  # 서버 실행 중
+    logger.info(
+        f"🌐 WebSocket 서버 실행: {settings.ai_server_host}:{settings.ai_server_port}"
+    )
+    yield
 
     # 종료 시 정리
     logger.info("🛑 AI 서버 종료 중...")
-
-    # 모델 정리
-    if hasattr(model_manager, "executor"):
-        model_manager.executor.shutdown(wait=True)
-
+    await websocket_handler.cleanup_all_sessions()
     logger.info("✅ AI 서버 종료 완료")
 
 
 # FastAPI 앱 생성
 app = FastAPI(
-    title="수어 인식 AI 서버",
-    description="Claude API를 사용한 실시간 수어 인식 시스템",
-    version="1.0.0",
+    title="수어 인식 AI 서버 (WebSocket)",
+    description="Claude API + WebSocket 기반 실시간 수어 인식",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
 # CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발 환경용, 운영에서는 특정 도메인으로 제한
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -64,7 +61,12 @@ app.add_middleware(
 @app.get("/")
 async def root():
     """루트 엔드포인트"""
-    return {"message": "수어 인식 AI 서버", "version": "1.0.0", "status": "running"}
+    return {
+        "message": "수어 인식 AI 서버",
+        "version": "2.0.0",
+        "status": "running",
+        "websocket_url": f"ws://{settings.ai_server_host}:{settings.ai_server_port}/ws",
+    }
 
 
 @app.get("/health")
@@ -73,6 +75,7 @@ async def health_check():
     return {
         "status": "healthy",
         "model_ready": model_manager.is_model_ready(),
+        "active_sessions": len(websocket_handler.session_manager.active_sessions),
         "timestamp": time.time(),
     }
 
@@ -83,10 +86,15 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
     WebSocket 엔드포인트
 
     Args:
-        websocket: WebSocket 연결
-        token: JWT 인증 토큰
+        websocket: WebSocket 연결 객체
+        token: JWT 인증 토큰 (쿼리 파라미터)
     """
-    await websocket_handler.handle_connection(websocket, token)
+    try:
+        await websocket_handler.handle_connection(websocket, token)
+    except WebSocketDisconnect:
+        logger.info("WebSocket 연결이 정상적으로 종료되었습니다")
+    except Exception as e:
+        logger.error(f"WebSocket 연결 중 오류 발생: {e}")
 
 
 if __name__ == "__main__":

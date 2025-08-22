@@ -1,171 +1,104 @@
 # app/core/dependencies.py
-from fastapi import Depends, HTTPException
-import aioredis
 import httpx
-import asyncio
 import logging
-from typing import Optional, Annotated
-from .config import settings
-from .security import TokenVerifier
-from app.services.claude_service import claude_service
-from app.models.model_manager import ModelManager
-from app.models.predictor import SignLanguagePredictor
+from typing import Optional
+from fastapi import HTTPException
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-class ConnectionManager:
-    """연결 관리 클래스"""
+class HTTPClientManager:
+    """HTTP 클라이언트 관리자"""
 
     def __init__(self):
-        self.redis_pool: Optional[aioredis.Redis] = None
-        self.http_client: Optional[httpx.AsyncClient] = None
-        self._redis_lock = asyncio.Lock()
-        self._http_lock = asyncio.Lock()
+        self._client: Optional[httpx.AsyncClient] = None
 
-    async def get_redis(self) -> aioredis.Redis:
-        """Redis 연결 풀 관리 (싱글톤 패턴)"""
-        if self.redis_pool is None:
-            async with self._redis_lock:
-                if self.redis_pool is None:
-                    try:
-                        redis_url = getattr(
-                            settings, "redis_url", "redis://localhost:6379/0"
-                        )
+    async def get_client(self) -> httpx.AsyncClient:
+        """HTTP 클라이언트 인스턴스 반환"""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(5.0),
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            )
+        return self._client
 
-                        self.redis_pool = await aioredis.from_url(
-                            redis_url,
-                            encoding="utf-8",
-                            decode_responses=True,
-                            max_connections=20,
-                            retry_on_timeout=True,
-                            socket_connect_timeout=5,
-                            socket_timeout=5,
-                        )
-
-                        await self.redis_pool.ping()
-                        logger.info(f"Redis 연결 성공: {redis_url}")
-
-                    except Exception as e:
-                        logger.warning(f"Redis 연결 실패 (선택사항): {e}")
-                        self.redis_pool = None
-
-        return self.redis_pool
-
-    async def get_http_client(self) -> httpx.AsyncClient:
-        """HTTP 클라이언트 관리 (백엔드 통신용)"""
-        if self.http_client is None:
-            async with self._http_lock:
-                if self.http_client is None:
-                    timeout = httpx.Timeout(10.0, connect=5.0)
-                    limits = httpx.Limits(
-                        max_keepalive_connections=20, max_connections=100
-                    )
-
-                    self.http_client = httpx.AsyncClient(
-                        timeout=timeout, limits=limits, follow_redirects=True
-                    )
-
-                    logger.info("HTTP 클라이언트 생성 완료")
-
-        return self.http_client
-
-    async def close_connections(self):
-        """모든 연결 정리"""
-        if self.redis_pool:
-            await self.redis_pool.close()
-            logger.info("Redis 연결 정리 완료")
-
-        if self.http_client:
-            await self.http_client.aclose()
-            logger.info("HTTP 클라이언트 정리 완료")
+    async def close(self):
+        """HTTP 클라이언트 정리"""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
 
 
-# 전역 연결 관리자
-connection_manager = ConnectionManager()
-
-
-# 의존성 주입 함수들
-async def get_redis() -> Optional[aioredis.Redis]:
-    """Redis 의존성 주입"""
-    return await connection_manager.get_redis()
+# 전역 HTTP 클라이언트 매니저
+http_client_manager = HTTPClientManager()
 
 
 async def get_http_client() -> httpx.AsyncClient:
-    """HTTP 클라이언트 의존성 주입"""
-    return await connection_manager.get_http_client()
+    """HTTP 클라이언트 의존성"""
+    return await http_client_manager.get_client()
 
 
 async def verify_token_with_backend(token: str) -> str:
-    """백엔드 서버에서 JWT 토큰 검증"""
+    """
+    백엔드에 JWT 토큰 검증 요청
+
+    Args:
+        token: JWT 토큰 문자열
+
+    Returns:
+        str: 검증된 사용자 ID
+
+    Raises:
+        HTTPException: 토큰이 유효하지 않은 경우
+    """
     try:
-        user_id = await TokenVerifier.verify_token(token)
-        if user_id:
+        http_client = await get_http_client()
+
+        # 백엔드 토큰 검증 API 호출
+        response = await http_client.post(
+            f"{settings.backend_url}{settings.backend_token_verify_endpoint}",
+            json={"token": token},
+            headers={"Content-Type": "application/json"},
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            user_id = data.get("userId")
+
+            if not user_id:
+                logger.warning("토큰 검증 응답에 userId가 없음")
+                raise HTTPException(status_code=401, detail="Invalid token response")
+
+            logger.info(f"토큰 검증 성공: 사용자 {user_id}")
             return user_id
+
+        elif response.status_code == 401:
+            logger.warning("유효하지 않은 토큰")
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+
         else:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            logger.error(f"토큰 검증 API 오류: {response.status_code}")
+            raise HTTPException(status_code=503, detail="Authentication service error")
+
+    except httpx.TimeoutException:
+        logger.error("토큰 검증 요청 타임아웃")
+        raise HTTPException(status_code=503, detail="Authentication service timeout")
+
+    except httpx.RequestError as e:
+        logger.error(f"토큰 검증 요청 실패: {e}")
+        raise HTTPException(
+            status_code=503, detail="Authentication service unavailable"
+        )
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"토큰 검증 중 오류: {e}")
-        raise HTTPException(
-            status_code=503, detail="Token verification service unavailable"
-        )
-
-
-async def check_backend_health() -> bool:
-    """백엔드 서비스 상태 확인"""
-    try:
-        http_client = await get_http_client()
-        health_url = f"{settings.BACKEND_URL}/health"
-
-        response = await http_client.get(health_url, timeout=3.0)
-        return response.status_code == 200
 
     except Exception as e:
-        logger.error(f"백엔드 헬스체크 실패: {e}")
-        return False
+        logger.error(f"토큰 검증 중 예상치 못한 오류: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-async def check_redis_health() -> bool:
-    """Redis 서비스 상태 확인"""
-    try:
-        redis = await get_redis()
-        if redis:
-            await redis.ping()
-            return True
-        return False
-
-    except Exception as e:
-        logger.error(f"Redis 헬스체크 실패: {e}")
-        return False
-
-
-def get_model_manager() -> ModelManager:
-    """모델 매니저 의존성 주입"""
-    return ModelManager()
-
-
-def get_predictor() -> SignLanguagePredictor:
-    """예측기 의존성 주입"""
-    return SignLanguagePredictor()
-
-
-def get_claude_service():
-    """Claude 서비스 의존성 주입"""
-    return claude_service
-
-
-def get_token_verifier() -> TokenVerifier:
-    """토큰 검증기 의존성 주입"""
-    return TokenVerifier()
-
-
-# 타입 어노테이션 별칭
-ModelManagerDep = Annotated[ModelManager, Depends(get_model_manager)]
-PredictorDep = Annotated[SignLanguagePredictor, Depends(get_predictor)]
-ClaudeServiceDep = Annotated[object, Depends(get_claude_service)]
-TokenVerifierDep = Annotated[TokenVerifier, Depends(get_token_verifier)]
-RedisDep = Annotated[Optional[aioredis.Redis], Depends(get_redis)]
-HttpClientDep = Annotated[httpx.AsyncClient, Depends(get_http_client)]
+async def cleanup_dependencies():
+    """의존성 정리 함수 (서버 종료 시 호출)"""
+    await http_client_manager.close()

@@ -1,113 +1,128 @@
 # app/websockets/message_types.py
-from pydantic import BaseModel, Field, validator
-from typing import List, Optional, Any, Union
 from enum import Enum
-import numpy as np
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+import time
 
 
 class MessageType(str, Enum):
     """WebSocket 메시지 타입"""
 
-    REGISTER_SESSION = "register_session"
-    START_TRANSLATION = "start_translation"
-    STOP_TRANSLATION = "stop_translation"
-    KEYPOINTS = "keypoints"
+    # client => server
+    KEYPOINTS = "keypoint_data"
+    TRANSLATION_START = "translation_start"
+    TRANSLATION_END = "translation_end"
+    PING = "ping"
+
+    # server => client
     PREDICTION_RESULT = "prediction_result"
-    SENTENCE_GENERATED = "sentence_generated"
+    TRANSLATION_RESULT = "translation_result"
+    TRANSLATION_STATUS = "translation_status"
     ERROR = "error"
-    STATUS = "status"
+    PONG = "pong"
 
 
-class RegisterSessionMessage(BaseModel):
-    """세션 등록 메시지"""
+class BaseMessage(BaseModel):
+    """base message structure"""
 
-    type: MessageType = MessageType.REGISTER_SESSION
-    session_id: str
-    timestamp: float
-
-
-class KeypointsMessage(BaseModel):
-    """키포인트 데이터 메시지"""
-
-    type: MessageType = MessageType.KEYPOINTS
-    session_id: str
-    frame_index: int
-    keypoints: List[List[float]] = Field(
-        ..., description="10프레임 배치: (10, 194)"
-    )  # 🔄 수정
-    timestamp: float
-
-    @validator("keypoints")
-    def validate_keypoints(cls, v):
-        """키포인트 데이터 검증"""
-        if not isinstance(v, list):
-            raise ValueError("keypoints must be a list")
-
-        # 배치 데이터인 경우: (10, 194)
-        if len(v) == 10:
-            for i, frame in enumerate(v):
-                if not isinstance(frame, list) or len(frame) != 194:
-                    raise ValueError(f"Frame {i} must be a list of 194 floats")
-                # 각 요소를 float로 변환
-                v[i] = [float(x) for x in frame]
-        else:
-            raise ValueError("keypoints must contain exactly 10 frames")
-
-        return v
+    type: MessageType
+    timestamp: float = Field(default_factory=time.time)
+    session_id: Optional[str] = None
 
 
-class StartTranslationMessage(BaseModel):
-    """번역 시작 메시지"""  # 🔄 추가
+class TranslationStartMessage(BaseMessage):
+    """translation start message"""
 
-    type: MessageType = MessageType.START_TRANSLATION
-    session_id: str
-    timestamp: float
-
-
-class StopTranslationMessage(BaseModel):
-    """번역 종료 메시지"""  # 🔄 추가
-
-    type: MessageType = MessageType.STOP_TRANSLATION
-    session_id: str
-    timestamp: float
+    type: MessageType = MessageType.TRANSLATION_START
+    user_id: str = Field(..., description="user ID")
 
 
-class PredictionResultMessage(BaseModel):
-    """예측 결과 메시지"""
+class TranslationEndMessage(BaseMessage):
+    """translation end message"""
 
-    type: MessageType = MessageType.PREDICTION_RESULT
-    session_id: str
-    label: str
-    confidence: float
-    frame_index: int
-    timestamp: float
+    type: MessageType = MessageType.TRANSLATION_END
+    user_id: str = Field(..., description="user ID")
+    # force_translation: bool = Field(default=True, description= "강제 번역 수행 여부")
 
 
-class SentenceGeneratedMessage(BaseModel):
-    """문장 생성 메시지"""
+class TranslationStatusMessage(BaseMessage):
+    """translation status message"""
 
-    type: MessageType = MessageType.SENTENCE_GENERATED
-    session_id: str
-    sentence: str
-    glosses: List[str]
-    timestamp: float
+    type: MessageType = MessageType.TRANSLATION_STATUS
+    status: str = Field(..., description="번역 상태")
+    session_id: str = Field(..., description="세션 ID")
+    message: Optional[str] = None
+    gloss_count: Optional[int] = None  # 현재 수집된 gloss 수
 
 
-class ErrorMessage(BaseModel):
+class TranslationResultMessage(BaseMessage):
+    """translation result message"""
+
+    type: MessageType = MessageType.TRANSLATION_RESULT
+    sentence: str = Field(..., description="번역된 한국어 문장")
+    gloss_sequence: List[str] = Field(..., description="사용된 gloss 시퀀스")
+    confidence_avg: float = Field(..., description="평균 신뢰도")
+
+
+class ErrorMessage(BaseMessage):
     """에러 메시지"""
 
     type: MessageType = MessageType.ERROR
-    session_id: str
-    error_code: str
-    error_message: str
-    timestamp: float
+    error_code: str = Field(..., description="에러 코드")
+    error_message: str = Field(..., description="에러 메시지")
+    details: Optional[Dict[str, Any]] = None
 
 
-class StatusMessage(BaseModel):
-    """상태 메시지"""
+class PingMessage(BaseMessage):
+    """핑 메시지"""
 
-    type: MessageType = MessageType.STATUS
-    session_id: str
-    status: str
-    details: Optional[dict] = None
-    timestamp: float
+    type: MessageType = MessageType.PING
+
+
+class PongMessage(BaseMessage):
+    """퐁 메시지"""
+
+    type: MessageType = MessageType.PONG
+
+
+class KeypointDataMessage(BaseMessage):
+    """키포인트 데이터 메시지"""
+
+    type: MessageType = MessageType.KEYPOINT_DATA
+    keypoints: List[float] = Field(..., description="194차원 키포인트 배열")
+    frame_index: int = Field(..., description="프레임 순서")
+    user_id: str = Field(..., description="사용자 ID")
+
+
+class MessageFactory:
+    """메시지 생성 헬퍼 클래스"""
+
+    @staticmethod
+    def create_translation_result(
+        session_id: str,
+        sentence: str,
+        gloss_sequence: List[str],
+        confidence_avg: float,
+        translation_trigger: str = "user_end",
+    ) -> TranslationResultMessage:
+        return TranslationResultMessage(
+            session_id=session_id,
+            sentence=sentence,
+            gloss_sequence=gloss_sequence,
+            confidence_avg=confidence_avg,
+            translation_trigger=translation_trigger,
+        )
+
+    @staticmethod
+    def create_translation_status(
+        session_id: str,
+        status: str,
+        message: Optional[str] = None,
+        gloss_count: Optional[int] = None,
+    ) -> TranslationStatusMessage:
+        return TranslationStatusMessage(
+            session_id=session_id,
+            status=status,
+            message=message,
+            gloss_count=gloss_count,
+        )

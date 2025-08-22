@@ -1,173 +1,263 @@
 # app/websockets/session_manager.py
-from collections import defaultdict, deque
-from typing import Dict, Optional
+import asyncio
+import uuid
+from collections import deque
+from typing import Dict, Optional, Set
+from fastapi import WebSocket
 import time
 import logging
-from fastapi import WebSocket
+
 from app.services.gloss_collector import GlossCollector
+from app.websockets.message_types import MessageFactory, SessionStatusMessage
 
 logger = logging.getLogger(__name__)
 
 
-class SessionManager:
-    def __init__(self):
-        """WebSocket 세션 관리자 초기화"""
-        self.active_connections: Dict[str, WebSocket] = {}
-        self.session_data: Dict[str, dict] = {}  # defaultdict 제거
-        self.keypoint_buffers: Dict[str, deque] = {}  # defaultdict 제거
-        self.gloss_collectors: Dict[str, GlossCollector] = {}  # defaultdict 제거
+# app/websockets/session_manager.py (SessionData 클래스 부분만 수정)
 
-    async def connect(self, websocket: WebSocket, session_id: str, user_id: str):
-        """WebSocket 연결 등록"""
-        # await websocket.accept() => ASGI protocol 위반
-        self.active_connections[session_id] = websocket
-        self.session_data[session_id] = {
-            "user_id": user_id,
-            "start_time": time.time(),
-            "frame_count": 0,
-            "translation_active": False,  # 번역 상태 추가
-        }
 
-        logger.info(f"세션 연결: session_id={session_id}, user_id={user_id}")
+class SessionData:
+    """개별 세션 데이터 클래스 (사용자 제어 번역)"""
 
-    def start_translation(self, session_id: str) -> bool:
-        """번역 세션 시작 - GlossCollector 생성"""
-        if session_id not in self.session_data:
-            logger.error(f"존재하지 않는 세션: {session_id}")
+    def __init__(self, session_id: str, user_id: str, websocket: WebSocket):
+        self.session_id = session_id
+        self.user_id = user_id
+        self.websocket = websocket
+        self.created_at = time.time()
+        self.last_activity = time.time()
+
+        # 수어 인식 관련
+        self.frame_buffer = deque(maxlen=10)  # 10프레임 버퍼
+        self.gloss_collector = GlossCollector()
+        self.frame_count = 0
+        self.is_active = False  # 기본값을 False로 변경 (번역 시작 시에만 True)
+
+        # 성능 모니터링
+        self.total_frames_processed = 0
+        self.total_predictions = 0
+        self.avg_confidence = 0.0
+
+        # 번역 세션 통계
+        self.translation_sessions = 0
+        self.total_glosses_collected = 0
+
+    def add_keypoints(self, keypoints: list) -> bool:
+        """키포인트를 버퍼에 추가하고 10프레임이 모였는지 확인"""
+        # 번역이 활성화된 경우에만 키포인트 추가
+        if not self.gloss_collector.is_translation_active():
             return False
 
-        # 새로운 GlossCollector 인스턴스 생성
-        self.gloss_collectors[session_id] = GlossCollector(
-            confidence_threshold=0.8,
-            max_glosses=100,
-            timeout_seconds=5,
-            use_local_fallback=True,
+        self.frame_buffer.append(keypoints)
+        self.frame_count += 1
+        self.last_activity = time.time()
+
+        return len(self.frame_buffer) == 10
+
+    def get_batch_keypoints(self) -> list:
+        """10프레임 배치 데이터를 반환하고 버퍼 초기화"""
+        if len(self.frame_buffer) != 10:
+            return None
+
+        batch = list(self.frame_buffer)
+        self.frame_buffer.clear()
+        return batch
+
+    def start_new_translation_session(self):
+        """새 번역 세션 시작"""
+        self.translation_sessions += 1
+        self.frame_buffer.clear()
+        self.frame_count = 0
+        self.is_active = True
+        self.gloss_collector.start_translation()
+
+    def end_translation_session(self):
+        """번역 세션 종료"""
+        self.is_active = False
+        collected_count = self.gloss_collector.get_gloss_count()
+        self.total_glosses_collected += collected_count
+
+        return collected_count > 0
+
+    def update_stats(self, confidence: float):
+        """통계 업데이트"""
+        self.total_predictions += 1
+        self.avg_confidence = (
+            self.avg_confidence * (self.total_predictions - 1) + confidence
+        ) / self.total_predictions
+
+    def get_translation_stats(self) -> dict:
+        """번역 관련 통계 반환"""
+        return {
+            "translation_sessions": self.translation_sessions,
+            "total_glosses_collected": self.total_glosses_collected,
+            "current_gloss_count": self.gloss_collector.get_gloss_count(),
+            "translation_active": self.gloss_collector.is_translation_active(),
+            "translation_duration": self.gloss_collector.get_translation_duration(),
+        }
+
+    def is_expired(self, timeout_seconds: int = 300) -> bool:
+        """세션 만료 확인 (기본 5분)"""
+        return time.time() - self.last_activity > timeout_seconds
+
+
+class WebSocketSessionManager:
+    """WebSocket 세션 관리자"""
+
+    def __init__(self):
+        # 세션 저장소 (메모리 기반)
+        self.active_sessions: Dict[str, SessionData] = {}
+        self.user_connections: Dict[str, WebSocket] = {}
+        self.websocket_to_session: Dict[WebSocket, str] = {}
+
+        # 정리 작업용
+        self._cleanup_task: Optional[asyncio.Task] = None
+        self._start_cleanup_task()
+
+    def _start_cleanup_task(self):
+        """백그라운드 정리 작업 시작"""
+        if self._cleanup_task is None:
+            self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+
+    async def _periodic_cleanup(self):
+        """주기적으로 만료된 세션 정리"""
+        while True:
+            try:
+                await asyncio.sleep(60)  # 1분마다 정리
+                await self.cleanup_expired_sessions()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"세션 정리 중 오류: {e}")
+
+    async def create_session(self, websocket: WebSocket, user_id: str) -> str:
+        """새 세션 생성"""
+        session_id = str(uuid.uuid4())
+
+        # 기존 사용자 세션이 있다면 정리
+        if user_id in self.user_connections:
+            await self.remove_session_by_user(user_id)
+
+        # 새 세션 생성
+        session_data = SessionData(session_id, user_id, websocket)
+
+        # 저장소에 등록
+        self.active_sessions[session_id] = session_data
+        self.user_connections[user_id] = websocket
+        self.websocket_to_session[websocket] = session_id
+
+        logger.info(
+            f"새 세션 생성: {session_id[:8]} (사용자: {user_id}) "
+            f"[총 {len(self.active_sessions)}개 세션]"
         )
 
-        # 키포인트 버퍼 초기화
-        self.keypoint_buffers[session_id] = deque(maxlen=10)
+        return session_id
 
-        # 번역 상태 업데이트
-        self.session_data[session_id]["translation_active"] = True
-        self.session_data[session_id]["translation_start_time"] = time.time()
+    async def remove_session(self, session_id: str) -> bool:
+        """세션 제거"""
+        if session_id not in self.active_sessions:
+            return False
 
-        logger.info(f"✅ 번역 시작: session_id={session_id}")
+        session_data = self.active_sessions[session_id]
+
+        # 저장소에서 제거
+        del self.active_sessions[session_id]
+
+        if session_data.user_id in self.user_connections:
+            del self.user_connections[session_data.user_id]
+
+        if session_data.websocket in self.websocket_to_session:
+            del self.websocket_to_session[session_data.websocket]
+
         logger.info(
-            f"🔍 GlossCollector 생성: {self.gloss_collectors[session_id].get_status()}"
+            f"세션 제거: {session_id[:8]} (사용자: {session_data.user_id}) "
+            f"[총 {len(self.active_sessions)}개 세션]"
         )
 
         return True
 
-    def stop_translation(self, session_id: str) -> Optional[GlossCollector]:
-        """번역 세션 종료 - GlossCollector 반환 후 정리"""
-        if session_id not in self.session_data:
-            logger.warning(f"존재하지 않는 세션: {session_id}")
-            return None
-
-        # 번역 상태 업데이트
-        self.session_data[session_id]["translation_active"] = False
-
-        # GlossCollector 반환 (종료 시 문장 생성용)
-        gloss_collector = self.gloss_collectors.get(session_id)
-
-        if gloss_collector:
-            logger.info(
-                f"🔍 번역 종료 시 GlossCollector 상태: {gloss_collector.get_status()}"
-            )
-
-        # 번역 관련 리소스만 정리 (연결은 유지)
-        if session_id in self.gloss_collectors:
-            del self.gloss_collectors[session_id]
-        if session_id in self.keypoint_buffers:
-            del self.keypoint_buffers[session_id]
-
-        logger.info(f"✅ 번역 종료: session_id={session_id}")
-        return gloss_collector
-
-    def disconnect(self, session_id: str):
-        """WebSocket 연결 해제 - 모든 리소스 정리"""
-        if session_id in self.active_connections:
-            del self.active_connections[session_id]
-
-        if session_id in self.session_data:
-            del self.session_data[session_id]
-
-        if session_id in self.keypoint_buffers:
-            del self.keypoint_buffers[session_id]
-
-        if session_id in self.gloss_collectors:
-            del self.gloss_collectors[session_id]
-
-        logger.info(f"세션 해제: session_id={session_id}")
-
-    def is_translation_active(self, session_id: str) -> bool:
-        """번역 활성 상태 확인"""
-        session_data = self.session_data.get(session_id)
-        return session_data and session_data.get("translation_active", False)
-
-    def add_keypoints(self, session_id: str, keypoints: list) -> bool:
-        """키포인트 데이터를 버퍼에 추가"""
-        if session_id not in self.keypoint_buffers:
-            logger.warning(f"키포인트 버퍼 없음: {session_id}")
+    async def remove_session_by_websocket(self, websocket: WebSocket) -> bool:
+        """WebSocket 연결로 세션 제거"""
+        if websocket not in self.websocket_to_session:
             return False
 
-        self.keypoint_buffers[session_id].append(keypoints)
-        self.session_data[session_id]["frame_count"] += 1
+        session_id = self.websocket_to_session[websocket]
+        return await self.remove_session(session_id)
 
-        # 10프레임이 모이면 True 반환
-        return len(self.keypoint_buffers[session_id]) == 10
+    async def remove_session_by_user(self, user_id: str) -> bool:
+        """사용자 ID로 세션 제거"""
+        for session_id, session_data in self.active_sessions.items():
+            if session_data.user_id == user_id:
+                return await self.remove_session(session_id)
+        return False
 
-    def get_batch_keypoints(self, session_id: str) -> Optional[list]:
-        """10프레임 배치 키포인트 반환"""
-        if session_id not in self.keypoint_buffers:
+    def get_session(self, session_id: str) -> Optional[SessionData]:
+        """세션 데이터 조회"""
+        return self.active_sessions.get(session_id)
+
+    def get_session_by_websocket(self, websocket: WebSocket) -> Optional[SessionData]:
+        """WebSocket으로 세션 조회"""
+        if websocket not in self.websocket_to_session:
             return None
 
-        buffer = self.keypoint_buffers[session_id]
-        if len(buffer) == 10:
-            batch = list(buffer)
-            buffer.clear()  # 버퍼 초기화
-            return batch
+        session_id = self.websocket_to_session[websocket]
+        return self.get_session(session_id)
 
-        return None
+    async def cleanup_expired_sessions(self):
+        """만료된 세션들 정리"""
+        expired_sessions = []
 
-    def get_gloss_collector(self, session_id: str) -> Optional[GlossCollector]:
-        """세션별 Gloss 수집기 반환"""
-        collector = self.gloss_collectors.get(session_id)
-        if not collector:
-            logger.warning(f"GlossCollector 없음: {session_id}")
-        return collector
+        for session_id, session_data in self.active_sessions.items():
+            if session_data.is_expired():
+                expired_sessions.append(session_id)
 
-    def has_session(self, session_id: str) -> bool:
-        """세션 존재 여부 확인"""
-        return session_id in self.session_data
+        for session_id in expired_sessions:
+            await self.remove_session(session_id)
+            logger.info(f"만료된 세션 정리: {session_id[:8]}")
 
-    def get_session_info(self, session_id: str) -> Optional[dict]:
-        """세션 정보 반환"""
-        return self.session_data.get(session_id)
+    async def cleanup_all_sessions(self):
+        """모든 세션 정리 (서버 종료 시)"""
+        session_ids = list(self.active_sessions.keys())
 
-    async def send_to_session(self, session_id: str, message: dict):
-        """특정 세션에 메시지 전송"""
-        if session_id in self.active_connections:
-            websocket = self.active_connections[session_id]
+        for session_id in session_ids:
+            session_data = self.active_sessions[session_id]
             try:
-                await websocket.send_json(message)
-            except Exception as e:
-                logger.error(f"메시지 전송 실패: session_id={session_id}, error={e}")
-                self.disconnect(session_id)
+                # 클라이언트에게 종료 알림
+                status_msg = MessageFactory.create_session_status(
+                    session_id=session_id,
+                    status="server_shutdown",
+                    message="서버가 종료됩니다",
+                )
+                await session_data.websocket.send_text(status_msg.model_dump_json())
+            except:
+                pass
 
-    def debug_sessions(self):
-        """디버그: 현재 세션 상태 출력"""
-        logger.info(f"🔍 활성 세션 수: {len(self.session_data)}")
-        for session_id, data in self.session_data.items():
-            collector = self.gloss_collectors.get(session_id)
-            logger.info(f"🔍 세션 {session_id}:")
-            logger.info(f"  - user_id: {data.get('user_id')}")
-            logger.info(f"  - translation_active: {data.get('translation_active')}")
-            logger.info(f"  - frame_count: {data.get('frame_count')}")
-            logger.info(f"  - gloss_collector: {'있음' if collector else '없음'}")
-            if collector and hasattr(collector, "get_status"):
-                logger.info(f"  - collector_status: {collector.get_status()}")
+            await self.remove_session(session_id)
+
+        # 정리 작업 취소
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+
+    def get_stats(self) -> dict:
+        """세션 통계 정보"""
+        total_frames = sum(
+            s.total_frames_processed for s in self.active_sessions.values()
+        )
+        total_predictions = sum(
+            s.total_predictions for s in self.active_sessions.values()
+        )
+
+        return {
+            "active_sessions": len(self.active_sessions),
+            "total_frames_processed": total_frames,
+            "total_predictions": total_predictions,
+            "avg_session_confidence": (
+                sum(s.avg_confidence for s in self.active_sessions.values())
+                / len(self.active_sessions)
+                if self.active_sessions
+                else 0
+            ),
+        }
 
 
-# 싱글톤 인스턴스
-session_manager = SessionManager()
+# 전역 세션 매니저 인스턴스
+session_manager = WebSocketSessionManager()

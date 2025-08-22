@@ -1,236 +1,154 @@
 # app/services/gloss_collector.py
-from collections import deque
-from typing import List, Optional
 import time
+from collections import deque
+from typing import List, Tuple, Optional
 import logging
-from .claude_service import claude_service
-from .local_translator import local_translator
 
 logger = logging.getLogger(__name__)
 
 
 class GlossCollector:
-    def __init__(
-        self,
-        confidence_threshold: float = 0.95,  # confidence_threshold 0.8로 하향
-        max_glosses: int = 100,
-        timeout_seconds: int = 5,
-        use_local_fallback: bool = True,  # 로컬 백업 사용 여부
-    ):
+    """고신뢰도 gloss 수집 및 번역 관리 (사용자 제어 방식)"""
+
+    def __init__(self, max_glosses: int = 20):  # 더 많은 gloss 수집 가능
+        self.max_glosses = max_glosses
+
+        # gloss 저장소: (gloss, confidence, timestamp)
+        self.glosses: deque = deque(maxlen=max_glosses)
+        self.translation_active = False  # 번역 활성 상태
+        self.translation_start_time: Optional[float] = None
+
+        # 통계
+        self.total_glosses_added = 0
+        self.translations_generated = 0
+
+    def start_translation(self):
+        """번역 시작 (사용자가 시작 버튼 클릭)"""
+        self.translation_active = True
+        self.translation_start_time = time.time()
+        self.glosses.clear()  # 새 번역 시작 시 기존 gloss 초기화
+
+        logger.info("번역 시작: gloss 수집 활성화")
+
+    def stop_translation(self) -> bool:
         """
-        Gloss 수집기 초기화
+        번역 종료 (사용자가 종료 버튼 클릭)
+
+        Returns:
+            bool: 번역할 gloss가 있는지 여부
+        """
+        self.translation_active = False
+        has_glosses = len(self.glosses) > 0
+
+        if has_glosses:
+            logger.info(f"번역 종료: {len(self.glosses)}개 gloss로 번역 수행")
+        else:
+            logger.info("번역 종료: 수집된 gloss 없음")
+
+        return has_glosses
+
+    def add_gloss(self, gloss: str, confidence: float) -> bool:
+        """
+        고신뢰도 gloss 추가 (번역이 활성화된 경우에만)
 
         Args:
-            confidence_threshold: 신뢰도 임계값 (0.95+)
-            max_glosses: 최대 수집할 gloss 개수
-            timeout_seconds: 타임아웃 시간 (초)
-            use_local_fallback: Claude API 실패 시 로컬 번역 사용 여부
+            gloss: 수어 단어
+            confidence: 신뢰도 (0.0 ~ 1.0)
+
+        Returns:
+            bool: 추가 성공 여부
         """
-        self.confidence_threshold = confidence_threshold
-        self.max_glosses = max_glosses
-        self.timeout_seconds = timeout_seconds
-        self.use_local_fallback = use_local_fallback
+        # 번역이 비활성화된 경우 추가하지 않음
+        if not self.translation_active:
+            return False
 
-        self.glosses = deque(maxlen=max_glosses)
-        self.last_gloss_time = time.time()
+        # 신뢰도 임계값 확인
+        if confidence < 0.96:
+            return False
 
-        # API 상태 추적
-        self.claude_api_available = True
-        self.consecutive_claude_failures = 0
-        self.max_claude_failures = 3  # 3회 연속 실패 시 로컬로 전환
+        # 중복 제거 (마지막 gloss와 같으면 무시)
+        if self.glosses and self.glosses[-1][0] == gloss:
+            return False
 
-    def has_glosses(self) -> bool:
-        """수집된 gloss가 있는지 확인"""
-        return len(self.glosses) > 0
+        # gloss 추가
+        current_time = time.time()
+        self.glosses.append((gloss, confidence, current_time))
+        self.total_glosses_added += 1
 
-    def get_current_glosses(self) -> List[str]:
-        """현재 수집된 gloss 목록 반환 (clear 전에 호출)"""
-        return list(self.glosses)
+        logger.debug(
+            f"Gloss 추가: {gloss} (신뢰도: {confidence:.3f}) [{len(self.glosses)}/{self.max_glosses}]"
+        )
+
+        return True
+
+    def should_generate_translation(self) -> str:
+        """
+        번역 생성 조건 확인
+
+        Returns:
+            str: 번역 트리거 유형 ("user_end", "none")
+        """
+        if not self.glosses:
+            return "none"
+
+        # 사용자가 번역을 종료한 경우만 번역 수행
+        if not self.translation_active and len(self.glosses) > 0:
+            return "user_end"
+
+        return "none"
+
+    def get_collected_glosses(self) -> List[str]:
+        """수집된 gloss 리스트 반환"""
+        return [gloss for gloss, _, _ in self.glosses]
 
     def get_gloss_count(self) -> int:
         """현재 수집된 gloss 개수"""
         return len(self.glosses)
 
-    def get_status(self) -> dict:
-        """현재 상태 정보 반환"""
+    def get_average_confidence(self) -> float:
+        """평균 신뢰도 반환"""
+        if not self.glosses:
+            return 0.0
+
+        total_confidence = sum(confidence for _, confidence, _ in self.glosses)
+        return total_confidence / len(self.glosses)
+
+    def get_confidence_details(self) -> List[Tuple[str, float]]:
+        """각 gloss의 신뢰도 상세 정보 반환"""
+        return [(gloss, confidence) for gloss, confidence, _ in self.glosses]
+
+    def reset_after_translation(self):
+        """번역 완료 후 초기화"""
+        gloss_count = len(self.glosses)
+        self.glosses.clear()
+        self.translation_active = False
+        self.translation_start_time = None
+
+        if gloss_count > 0:
+            self.translations_generated += 1
+            logger.info(f"번역 완료 후 초기화: {gloss_count}개 gloss 처리됨")
+
+    def is_translation_active(self) -> bool:
+        """번역 활성 상태 확인"""
+        return self.translation_active
+
+    def has_glosses(self) -> bool:
+        """수집된 gloss가 있는지 확인"""
+        return len(self.glosses) > 0
+
+    def get_translation_duration(self) -> Optional[float]:
+        """현재 번역 세션 지속 시간 (초)"""
+        if self.translation_start_time is None:
+            return None
+        return time.time() - self.translation_start_time
+
+    def get_stats(self) -> dict:
+        """통계 정보 반환"""
         return {
-            "gloss_count": len(self.glosses),
-            "current_glosses": list(self.glosses),
-            "last_gloss_time": self.last_gloss_time,
-            "claude_api_available": self.claude_api_available,
-            "consecutive_failures": self.consecutive_claude_failures,
-            "confidence_threshold": self.confidence_threshold,
-            "max_glosses": self.max_glosses,
-            "timeout_seconds": self.timeout_seconds,
+            "current_glosses": len(self.glosses),
+            "translation_active": self.translation_active,
+            "total_glosses_added": self.total_glosses_added,
+            "translations_generated": self.translations_generated,
+            "average_confidence": self.get_average_confidence(),
+            "translation_duration": self.get_translation_duration(),
         }
-
-    async def force_generate_sentence(self) -> str:
-        """강제로 현재 수집된 gloss로 문장 생성"""
-        if not self.glosses:
-            return ""
-
-        logger.info(f"강제 문장 생성: {list(self.glosses)}")
-        return await self._generate_sentence_with_fallback()
-
-    async def clear_glosses(self):
-        """수집된 gloss 강제 초기화"""
-        self.glosses.clear()
-        self.last_gloss_time = time.time()
-        logger.info("Gloss 버퍼 수동 초기화")
-
-    def reset_claude_api_status(self):
-        """Claude API 상태 리셋 (수동 재시도용)"""
-        self.claude_api_available = True
-        self.consecutive_claude_failures = 0
-        logger.info("Claude API 상태 리셋 완료")
-
-    async def add_prediction(self, label: str, confidence: float) -> Optional[str]:
-        """
-        예측 결과를 추가하고 문장 생성 조건을 확인
-
-        Args:
-            label: 예측된 gloss
-            confidence: 신뢰도 점수
-
-        Returns:
-            생성된 한국어 문장 (조건 만족 시) 또는 None
-        """
-        current_time = time.time()
-
-        # 신뢰도가 임계값 이상인 경우만 추가
-        if confidence >= self.confidence_threshold:
-            self.glosses.append(label)
-            self.last_gloss_time = current_time
-
-            logger.debug(f"고신뢰도 gloss 추가: {label} (신뢰도: {confidence:.3f})")
-
-        # 문장 생성 조건 확인
-        if self._should_generate_sentence(current_time):
-            try:
-                return await self._generate_sentence_with_fallback()
-            except Exception as e:
-                logger.error(f"문장 생성 중 오류: {e}")
-                # 최종 백업: 단순 조합
-                result = " ".join(list(self.glosses))
-                self.glosses.clear()
-                return result
-
-        return None
-
-    def _should_generate_sentence(self, current_time: float) -> bool:
-        """문장 생성 조건 확인"""
-        # 조건 1: 최대 gloss 개수에 도달
-        if len(self.glosses) >= self.max_glosses:
-            return True
-
-        # 조건 2: 타임아웃 도달 (gloss가 1개 이상 있는 경우)
-        if (
-            len(self.glosses) > 0
-            and (current_time - self.last_gloss_time) >= self.timeout_seconds
-        ):
-            return True
-
-        return False
-
-    async def _generate_sentence_with_fallback(self) -> str:
-        """Claude API와 로컬 번역을 활용한 문장 생성"""
-        if not self.glosses:
-            return ""
-
-        glosses_list = list(self.glosses)
-        logger.info(f"문장 생성 시작: {glosses_list}")
-
-        # 1차: Claude API 시도 (사용 가능한 경우만)
-        if self.claude_api_available:
-            try:
-                sentence = await claude_service.translate_glosses_to_korean(
-                    glosses_list
-                )
-
-                # 성공 시 실패 카운터 리셋
-                self.consecutive_claude_failures = 0
-
-                # 초기화
-                self.glosses.clear()
-                self.last_gloss_time = time.time()
-
-                return sentence
-
-            except Exception as e:
-                logger.warning(f"Claude API 호출 실패: {e}")
-                self.consecutive_claude_failures += 1
-
-                # 연속 실패 시 Claude API 일시 비활성화
-                if self.consecutive_claude_failures >= self.max_claude_failures:
-                    self.claude_api_available = False
-                    logger.warning(
-                        f"Claude API 연속 {self.max_claude_failures}회 실패 - 로컬 번역으로 전환"
-                    )
-
-        # ✅ 2차: 로컬 번역 시도 (반드시 실행되도록 보장)
-        if self.use_local_fallback:
-            try:
-                logger.info("🔄 로컬 번역 서비스 사용")
-
-                # local_translator import 확인
-                from .local_translator import local_translator
-
-                sentence = await local_translator.translate_glosses_to_korean(
-                    glosses_list
-                )
-
-                # 초기화
-                self.glosses.clear()
-                self.last_gloss_time = time.time()
-
-                logger.info(f"✅ 로컬 번역 완료: {sentence}")
-                return sentence
-
-            except Exception as e:
-                logger.error(f"로컬 번역 실패: {e}")
-                logger.exception("로컬 번역 상세 오류:")
-
-        # ✅ 3차: 최종 백업 (단순 조합)
-        logger.warning("모든 번역 서비스 실패 - 단순 조합 사용")
-        sentence = " ".join(glosses_list)
-        self.glosses.clear()
-        self.last_gloss_time = time.time()
-
-        return sentence
-
-    def reset_claude_api_status(self):
-        """Claude API 상태 리셋 (수동 재시도용)"""
-        self.claude_api_available = True
-        self.consecutive_claude_failures = 0
-        logger.info("Claude API 상태 리셋 완료")
-
-
-# 사용 예시
-if __name__ == "__main__":
-    import asyncio
-
-    async def test_local_translation():
-        collector = GlossCollector(use_local_fallback=True)
-
-        # 테스트 데이터
-        test_predictions = [
-            ("재미1", 0.97),
-            ("좋다1", 0.98),
-            ("일하다1", 0.96),
-            ("회사1", 0.99),
-            ("오늘1", 0.97),
-        ]
-
-        for label, confidence in test_predictions:
-            sentence = await collector.add_prediction(label, confidence)
-            if sentence:
-                print(f"생성된 문장: {sentence}")
-
-        # 강제 문장 생성
-        if len(collector.glosses) > 0:
-            final_sentence = await collector._generate_sentence_with_fallback()
-            print(f"최종 문장: {final_sentence}")
-
-    asyncio.run(test_local_translation())
-
-gloss_collector = GlossCollector()

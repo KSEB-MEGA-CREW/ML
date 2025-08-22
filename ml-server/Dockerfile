@@ -1,47 +1,30 @@
-FROM python:3.11-alpine
+# Dockerfile
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Alpine에서 ML/AI 라이브러리에 필요한 패키지들 설치
-RUN apk update && apk upgrade && \
-    apk add --no-cache \
+# 시스템 패키지 업데이트 및 필수 패키지 설치
+RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
-    musl-dev \
-    linux-headers \
-    gfortran \
-    openblas-dev \
-    lapack-dev \
-    jpeg-dev \
-    zlib-dev \
-    freetype-dev \
-    lcms2-dev \
-    openjpeg-dev \
-    tiff-dev \
-    tk-dev \
-    tcl-dev \
-    harfbuzz-dev \
-    fribidi-dev \
-    libc-dev \
-    && rm -rf /var/cache/apk/*
+    && rm -rf /var/lib/apt/lists/*
 
-# pip 업그레이드
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
-# requirements.txt 복사 및 설치
+# Python 의존성 설치
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 애플리케이션 코드 복사
 COPY . .
 
-# 나머지 설정...
-RUN mkdir -p /app/models && \
-    addgroup -S appgroup && \
-    adduser -S appuser -G appgroup && \
-    chown -R appuser:appgroup /app
+# 모델 디렉토리 생성
+RUN mkdir -p /app/models
 
-USER appuser
+# 포트 노출
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 헬스체크 추가
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# 애플리케이션 실행
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
