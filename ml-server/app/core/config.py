@@ -1,5 +1,6 @@
 # app/core/config.py
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import computed_field
 from typing import Optional, List
 import os
 
@@ -33,7 +34,7 @@ class Settings(BaseSettings):
     backend_token_verify_endpoint: str = "/api/auth/verify-token"
 
     # WebSocket 설정
-    websocket_timeout: int = 300  # 5분
+    websocket_timeout: int = 300
     max_connections: int = 100
 
     # 모델 설정
@@ -41,23 +42,26 @@ class Settings(BaseSettings):
     labels_path: str = "./models/label_map.json"
     frame_buffer_size: int = 10
 
+    # Gloss 수집 설정
+    gloss_confidence_threshold: float = 0.8
+    gloss_max_count: int = 20
+    gloss_deduplication: bool = True
+
     # 로깅 설정
     log_level: str = "INFO"
     debug: bool = False
 
     # CORS 설정
-    allowed_origins: List[str] = ["*"]  # 개발환경용, 운영시 특정 도메인으로 제한
+    allowed_origins: List[str] = ["*"]
 
     # 환경 구분
     environment: str = "development"
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        # 백엔드 URL 동적 생성
-        if not hasattr(self, "backend_url") or not self.backend_url:
-            self.backend_url = (
-                f"{self.backend_protocol}://{self.backend_host}:{self.backend_port}"
-            )
+    # Computed field로 backend_url 생성 (Pydantic v2 방식)
+    @computed_field
+    @property
+    def backend_url(self) -> str:
+        return f"{self.backend_protocol}://{self.backend_host}:{self.backend_port}"
 
 
 # 전역 설정 인스턴스

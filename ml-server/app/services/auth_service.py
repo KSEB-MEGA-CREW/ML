@@ -18,7 +18,7 @@ class AuthService:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 # 🔄 수정: 백엔드 토큰 검증 엔드포인트 호출
                 response = await client.post(
-                    f"{self.backend_url}/api/auth/verify",
+                    f"{self.backend_url}/api/auth/verify-token",
                     json={"token": token},
                     headers={"Content-Type": "application/json"},
                 )

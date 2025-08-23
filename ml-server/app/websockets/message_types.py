@@ -9,7 +9,7 @@ class MessageType(str, Enum):
     """WebSocket 메시지 타입"""
 
     # client => server
-    KEYPOINTS = "keypoint_data"
+    KEYPOINTS = "keypoints"
     TRANSLATION_START = "translation_start"
     TRANSLATION_END = "translation_end"
     PING = "ping"
@@ -88,7 +88,7 @@ class PongMessage(BaseMessage):
 class KeypointDataMessage(BaseMessage):
     """키포인트 데이터 메시지"""
 
-    type: MessageType = MessageType.KEYPOINT_DATA
+    type: MessageType = MessageType.KEYPOINTS
     keypoints: List[float] = Field(..., description="194차원 키포인트 배열")
     frame_index: int = Field(..., description="프레임 순서")
     user_id: str = Field(..., description="사용자 ID")
@@ -98,19 +98,27 @@ class MessageFactory:
     """메시지 생성 헬퍼 클래스"""
 
     @staticmethod
+    def create_ping_message(session_id: Optional[str] = None) -> PingMessage:
+        """핑 메시지 생성 (오류 해결)"""
+        return PingMessage(session_id=session_id)
+
+    @staticmethod
+    def create_pong_message(session_id: Optional[str] = None) -> PongMessage:
+        """퐁 메시지 생성"""
+        return PongMessage(session_id=session_id)
+
+    @staticmethod
     def create_translation_result(
         session_id: str,
         sentence: str,
         gloss_sequence: List[str],
         confidence_avg: float,
-        translation_trigger: str = "user_end",
     ) -> TranslationResultMessage:
         return TranslationResultMessage(
             session_id=session_id,
             sentence=sentence,
             gloss_sequence=gloss_sequence,
             confidence_avg=confidence_avg,
-            translation_trigger=translation_trigger,
         )
 
     @staticmethod
@@ -125,4 +133,19 @@ class MessageFactory:
             status=status,
             message=message,
             gloss_count=gloss_count,
+        )
+
+    @staticmethod
+    def create_error_message(
+        session_id: str,
+        error_code: str,
+        error_message: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> ErrorMessage:
+        """에러 메시지 생성"""
+        return ErrorMessage(
+            session_id=session_id,
+            error_code=error_code,
+            error_message=error_message,
+            details=details,
         )

@@ -8,7 +8,7 @@ import time
 import logging
 
 from app.services.gloss_collector import GlossCollector
-from app.websockets.message_types import MessageFactory, SessionStatusMessage
+from app.websockets.message_types import MessageFactory, TranslationStatusMessage
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +222,7 @@ class WebSocketSessionManager:
             session_data = self.active_sessions[session_id]
             try:
                 # 클라이언트에게 종료 알림
-                status_msg = MessageFactory.create_session_status(
+                status_msg = MessageFactory.create_translation_status(
                     session_id=session_id,
                     status="server_shutdown",
                     message="서버가 종료됩니다",
