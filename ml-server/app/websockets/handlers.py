@@ -19,8 +19,7 @@ from app.websockets.message_types import (
 from ..core.security import TokenVerifier
 from app.models.model_manager import model_manager
 from app.services.claude_service import claude_service
-from ..services.gloss_collector import gloss_collector
-from .session_manager import session_manager
+from app.services.gloss_collector import GlossCollector
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +98,10 @@ class WebSocketHandler:
         """다중 단계 토큰 검증"""
         try:
             # 🔥 0단계: 개발용 토큰 우선 처리 (JWT 디코딩 전에)
-            if token in ['demo_token', 'test_token', 'dev_token']:
+            if token in ["demo_token", "test_token", "dev_token"]:
                 logger.info(f"🚀 개발용 토큰 사용: {token}")
                 return "demo_user"
-            
+
             # 1단계: 백엔드 검증
             logger.info("🔍 1단계: 백엔드 토큰 검증 시도")
             user_id = await TokenVerifier.verify_token(token)
@@ -293,9 +292,11 @@ class WebSocketHandler:
                 if session_data.gloss_collector.is_translation_active():
                     result_msg = MessageFactory.create_prediction_result(
                         session_id=session_data.session_id,
-                        gloss=gloss,
-                        confidence=confidence,
-                        frame_count=10,
+                        data={
+                            "gloss": gloss,
+                            "confidence": confidence,
+                            "frame_count": 10,
+                        },
                     )
                     await session_data.websocket.send_text(result_msg.model_dump_json())
 
@@ -308,7 +309,7 @@ class WebSocketHandler:
 
         except Exception as e:
             logger.error(f"배치 예측 처리 오류: {e}")
-            error_msg = MessageFactory.create_error(
+            error_msg = MessageFactory.create_error_message(
                 session_id=session_data.session_id,
                 error_code="PREDICTION_ERROR",
                 error_message=f"예측 처리 실패: {str(e)}",
@@ -404,7 +405,6 @@ class WebSocketHandler:
                     sentence=translation_result["sentence"],
                     gloss_sequence=gloss_sequence,
                     confidence_avg=session_data.gloss_collector.get_average_confidence(),
-                    translation_trigger=trigger,
                 )
                 await session_data.websocket.send_text(
                     translation_msg.model_dump_json()

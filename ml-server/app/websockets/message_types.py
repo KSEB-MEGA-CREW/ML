@@ -28,6 +28,7 @@ class BaseMessage(BaseModel):
     type: MessageType
     timestamp: float = Field(default_factory=time.time)
     session_id: Optional[str] = None
+    data: Optional[Dict[str,Any]] = None
 
 
 class TranslationStartMessage(BaseMessage):
