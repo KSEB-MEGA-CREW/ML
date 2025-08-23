@@ -149,3 +149,14 @@ class MessageFactory:
             error_message=error_message,
             details=details,
         )
+
+    @staticmethod
+    def create_prediction_result(
+        session_id: str, gloss: str, confidence: float, frame_count: int
+    ) -> BaseMessage:
+        """예측 결과 메시지 생성"""
+        return BaseMessage(
+            type=MessageType.PREDICTION_RESULT,
+            session_id=session_id,
+            data={"gloss": gloss, "confidence": confidence, "frame_count": frame_count},
+        )
