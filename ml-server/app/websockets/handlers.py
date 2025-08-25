@@ -16,7 +16,7 @@ from app.websockets.message_types import (
     TranslationEndMessage,
     PingMessage,
 )
-from ..core.security import TokenVerifier
+from app.core.dependencies import verify_token_with_backend
 from app.models.model_manager import model_manager
 from app.services.claude_service import claude_service
 from app.services.gloss_collector import GlossCollector
@@ -104,7 +104,7 @@ class WebSocketHandler:
 
             # 1단계: 백엔드 검증
             logger.info("🔍 1단계: 백엔드 토큰 검증 시도")
-            user_id = await TokenVerifier.verify_token(token)
+            user_id = await verify_token_with_backend(token)
 
             if user_id:
                 logger.info(f"✅ 백엔드 검증 성공: user_id={user_id}")
@@ -165,7 +165,7 @@ class WebSocketHandler:
                         message_data = json.loads(message_text)
                         await self._handle_message(session_data, message_data)
                     except json.JSONDecodeError:
-                        error_msg = MessageFactory.create_error(
+                        error_msg = MessageFactory.create_error_message(
                             session_id=session_id,
                             error_code="INVALID_JSON",
                             error_message="Invalid JSON format",
@@ -175,7 +175,7 @@ class WebSocketHandler:
                         logger.error(
                             f"메시지 처리 중 오류 (세션 {session_id[:8]}): {e}"
                         )
-                        error_msg = MessageFactory.create_error(
+                        error_msg = MessageFactory.create_error_message(
                             session_id=session_id,
                             error_code="MESSAGE_PROCESSING_ERROR",
                             error_message=str(e),
@@ -255,7 +255,7 @@ class WebSocketHandler:
 
         except Exception as e:
             logger.error(f"키포인트 데이터 처리 오류: {e}")
-            error_msg = MessageFactory.create_error(
+            error_msg = MessageFactory.create_error_message(
                 session_id=session_data.session_id,
                 error_code="KEYPOINT_PROCESSING_ERROR",
                 error_message=f"키포인트 처리 실패: {str(e)}",
@@ -292,11 +292,9 @@ class WebSocketHandler:
                 if session_data.gloss_collector.is_translation_active():
                     result_msg = MessageFactory.create_prediction_result(
                         session_id=session_data.session_id,
-                        data={
-                            "gloss": gloss,
-                            "confidence": confidence,
-                            "frame_count": 10,
-                        },
+                        gloss=gloss,
+                        confidence=confidence,
+                        frame_count=10,
                     )
                     await session_data.websocket.send_text(result_msg.model_dump_json())
 
@@ -418,7 +416,7 @@ class WebSocketHandler:
                 )
             else:
                 # 번역 실패
-                error_msg = MessageFactory.create_error(
+                error_msg = MessageFactory.create_error_message(
                     session_id=session_data.session_id,
                     error_code="TRANSLATION_FAILED",
                     error_message="Claude API 번역에 실패했습니다.",
@@ -427,7 +425,7 @@ class WebSocketHandler:
 
         except Exception as e:
             logger.error(f"번역 생성 오류: {e}")
-            error_msg = MessageFactory.create_error(
+            error_msg = MessageFactory.create_error_message(
                 session_id=session_data.session_id,
                 error_code="TRANSLATION_ERROR",
                 error_message=f"번역 생성 실패: {str(e)}",

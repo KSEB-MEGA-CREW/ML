@@ -64,15 +64,36 @@ async def verify_token_with_backend(token: str) -> str:
 
         if response.status_code == 200:
             data = response.json()
-            user_id = data.get("userId")
+            # debug log 추가
+            logger.info(f"백엔드 토큰 검증 응답 데이터: {data}")
 
-            if not user_id:
-                logger.warning("토큰 검증 응답에 userId가 없음")
-                raise HTTPException(status_code=401, detail="Invalid token response")
+            user_id = None
 
-            logger.info(f"토큰 검증 성공: 사용자 {user_id}")
-            return user_id
+            # 케이스 1: 직접 userId 필드
+            if "userId" in data:
+                user_id = data["userId"]
+            # 케이스 2: data 객체 내부의 userId
+            elif "data" in data and isinstance(data["data"], dict):
+                user_id = data["data"].get("userId")
+            # 케이스 3: success와 함께 중첩된 구조
+            elif data.get("success", False) and "data" in data:
+                token_data = data["data"]
+                user_id = (
+                    token_data.get("userId") if isinstance(token_data, dict) else None
+                )
+            # 케이스 4: 다른 필드명들 시도
+            elif "user_id" in data:
+                user_id = data["user_id"]
+            elif "id" in data:
+                user_id = data["id"]
 
+            if user_id:
+                logger.info(f"토큰 검증 성공: 사용자 ID {user_id}")
+                return str(user_id)
+            else:
+                logger.warning(f"토큰 검증 응답에 userId가 없음. 응답 구조: {data}")
+                return HTTPException(status_code=401, detail="Invalid token response")
+            
         elif response.status_code == 401:
             logger.warning("유효하지 않은 토큰")
             raise HTTPException(status_code=401, detail="Invalid or expired token")
