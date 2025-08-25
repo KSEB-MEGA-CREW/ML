@@ -108,7 +108,7 @@ class WebSocketHandler:
 
             if user_id:
                 logger.info(f"✅ 백엔드 검증 성공: user_id={user_id}")
-                return str(user_id)
+                return user_id
 
             # 2단계: JWT 직접 디코딩
             logger.warning("⚠️ 백엔드 검증 실패 - JWT 직접 디코딩 시도")

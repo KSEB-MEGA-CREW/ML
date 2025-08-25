@@ -28,21 +28,21 @@ class BaseMessage(BaseModel):
     type: MessageType
     timestamp: float = Field(default_factory=time.time)
     session_id: Optional[str] = None
-    data: Optional[Dict[str,Any]] = None
+    data: Optional[Dict[str, Any]] = None
 
 
 class TranslationStartMessage(BaseMessage):
     """translation start message"""
 
     type: MessageType = MessageType.TRANSLATION_START
-    user_id: str = Field(..., description="user ID")
+    user_id: int = Field(..., description="user ID")
 
 
 class TranslationEndMessage(BaseMessage):
     """translation end message"""
 
     type: MessageType = MessageType.TRANSLATION_END
-    user_id: str = Field(..., description="user ID")
+    user_id: int = Field(..., description="user ID")
     # force_translation: bool = Field(default=True, description= "강제 번역 수행 여부")
 
 
@@ -92,7 +92,8 @@ class KeypointDataMessage(BaseMessage):
     type: MessageType = MessageType.KEYPOINTS
     keypoints: List[float] = Field(..., description="194차원 키포인트 배열")
     frame_index: int = Field(..., description="프레임 순서")
-    user_id: str = Field(..., description="사용자 ID")
+    user_id: int = Field(..., description="사용자 ID")
+    session_id: str = Field(..., description="세션 ID")
 
 
 class MessageFactory:
