@@ -44,12 +44,15 @@ class SessionData:
     def add_keypoints(self, keypoints: list) -> bool:
         """키포인트를 버퍼에 추가하고 10프레임이 모였는지 확인"""
         # 번역이 활성화된 경우에만 키포인트 추가
-        if not self.gloss_collector.is_translation_active():
-            return False
-
+        # 키포인트는 항상 버퍼링하되, 처리는 번역 활성 시에만
         self.frame_buffer.append(keypoints)
         self.frame_count += 1
         self.last_activity = time.time()
+        
+        # 번역 비활성 시에는 False 반환하여 처리 건너뛰기
+        if not self.gloss_collector.is_translation_active():
+            return False
+
 
         return len(self.frame_buffer) == 10
 

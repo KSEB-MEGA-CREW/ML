@@ -12,7 +12,6 @@ from app.websockets.message_types import (
     MessageType,
     MessageFactory,
     KeypointDataMessage,
-    FrameBatchMessage,
     TranslationStartMessage,
     TranslationEndMessage,
     PingMessage,
@@ -21,7 +20,6 @@ from app.core.dependencies import verify_token_with_backend
 from app.models.model_manager import model_manager
 from app.services.claude_service import claude_service
 from app.services.gloss_collector import GlossCollector
-from app.services.frame_processor import frame_processor
 
 logger = logging.getLogger(__name__)
 
@@ -97,46 +95,16 @@ class WebSocketHandler:
                 await self.session_manager.remove_session_by_websocket(websocket)
 
     async def _verify_user_token(self, token: str) -> str:
-        """다중 단계 토큰 검증"""
+        """간소화된 토큰 검증 - 개발용"""
         try:
-            # 🔥 0단계: 개발용 토큰 우선 처리 (JWT 디코딩 전에)
+            # 개발용 토큰 허용
             if token in ["demo_token", "test_token", "dev_token"]:
                 logger.info(f"🚀 개발용 토큰 사용: {token}")
                 return "demo_user"
 
-            # 1단계: 백엔드 검증
-            logger.info("🔍 1단계: 백엔드 토큰 검증 시도")
-            user_id = await verify_token_with_backend(token)
-
-            if user_id:
-                logger.info(f"✅ 백엔드 검증 성공: user_id={user_id}")
-                return str(user_id)
-
-            # 2단계: JWT 직접 디코딩
-            logger.warning("⚠️ 백엔드 검증 실패 - JWT 직접 디코딩 시도")
-
-            import jwt
-
-            decoded = jwt.decode(token, options={"verify_signature": False})
-            logger.info(f"🔍 JWT 페이로드: {decoded}")
-
-            # 여러 필드에서 사용자 ID 추출 시도
-            user_id = (
-                decoded.get("userId") or decoded.get("user_id") or decoded.get("sub")
-            )
-
-            if user_id:
-                logger.info(f"✅ JWT 직접 디코딩 성공: user_id={user_id}")
-                return str(user_id)
-
-            # 3단계: 이메일을 사용자 ID로 사용
-            email = decoded.get("sub")  # subject는 보통 이메일
-            if email and "@" in email:
-                logger.warning(f"⚠️ 이메일을 사용자 ID로 사용: {email}")
-                return email
-
-            logger.error("❌ JWT에서 사용자 식별자를 찾을 수 없음")
-            return None
+            # 기본적으로 모든 토큰 허용 (개발 단계)
+            logger.info(f"🔓 개발 모드: 토큰 검증 생략 - {token[:20]}...")
+            return f"user_{hash(token) % 10000}"
         except Exception as e:
             logger.error(f"❌ 토큰 검증 오류: {e}")
             import traceback
@@ -163,9 +131,7 @@ class WebSocketHandler:
                     )
 
                     try:
-                        # JSON 디코딩 시도
                         message_data = json.loads(message_text)
-
                         await self._handle_message(session_data, message_data)
                     except json.JSONDecodeError:
                         error_msg = MessageFactory.create_error_message(
@@ -210,25 +176,13 @@ class WebSocketHandler:
     ):
         """개별 메시지 처리"""
         message_type = message_data.get("type")
-
-        # 타입 에러 디버깅용 로그
-        logger.info(f"수신된 메시지 타입: '{message_type}'")
-
         session_id = session_data.session_id
 
         # 세션 활동 시간 업데이트
         session_data.last_activity = time.time()
 
-        # type: None 에러를 해결하기 위한 방어 => type 필드가 없는 메시지는 무시
-        if message_type is None:
-            logger.warning(f"❌ type 필드가 없는 메시지 무시: {message_data}")
-            return
-        
         if message_type == MessageType.KEYPOINTS:
             await self._handle_keypoint_data(session_data, message_data)
-
-        elif message_type == MessageType.FRAME_BATCH:
-            await self._handle_frame_batch(session_data, message_data)
 
         elif message_type in [MessageType.TRANSLATION_START, "start_translation"]:
             await self._handle_translation_start(session_data, message_data)
@@ -246,7 +200,6 @@ class WebSocketHandler:
             logger.warning(
                 f"알 수 없는 메시지 타입: {message_type} (세션 {session_id[:8]})"
             )
-            logger.warning(f"  > 전체 메시지 데이터: {message_data}")
 
     async def _handle_keypoint_data(
         self, session_data: SessionData, message_data: Dict[str, Any]
@@ -275,130 +228,6 @@ class WebSocketHandler:
                 session_id=session_data.session_id,
                 error_code="KEYPOINT_PROCESSING_ERROR",
                 error_message=f"키포인트 처리 실패: {str(e)}",
-            )
-            await session_data.websocket.send_text(error_msg.model_dump_json())
-
-    async def _handle_frame_batch(self, session_data: SessionData, message_data: Dict[str, Any]):
-        """프레임 배치 처리 (NEW F2T 기능)"""
-        try:
-            batch_msg = FrameBatchMessage(**message_data)
-            
-            # 번역이 활성화된 경우에만 프레임 처리
-            if not session_data.gloss_collector.is_translation_active():
-                logger.debug(
-                    f"번역 비활성 상태 - 프레임 배치 무시: {session_data.session_id[:8]}"
-                )
-                return
-
-            logger.info(
-                f"🎬 프레임 배치 수신: {len(batch_msg.frame_batch)}개 (배치 #{batch_msg.batch_index})"
-            )
-
-            # 프레임 배치 → 키포인트 배치 변환
-            keypoint_batch = await frame_processor.process_frame_batch_async(
-                batch_msg.frame_batch
-            )
-
-            # 유효한 키포인트가 있는지 확인
-            valid_keypoints = [kp for kp in keypoint_batch if kp is not None]
-            
-            if not valid_keypoints:
-                logger.warning(f"프레임 배치에서 유효한 키포인트 추출 실패")
-                error_msg = MessageFactory.create_error_message(
-                    session_id=session_data.session_id,
-                    error_code="KEYPOINT_EXTRACTION_FAILED",
-                    error_message="프레임에서 키포인트 추출에 실패했습니다.",
-                )
-                await session_data.websocket.send_text(error_msg.model_dump_json())
-                return
-
-            logger.info(
-                f"✅ 키포인트 추출 완료: {len(valid_keypoints)}/{len(keypoint_batch)}개 성공"
-            )
-
-            # 모델 추론을 위한 배치 처리
-            await self._process_frame_to_text_batch(
-                session_data, valid_keypoints, batch_msg.batch_index
-            )
-
-        except Exception as e:
-            logger.error(f"프레임 배치 처리 오류: {e}")
-            error_msg = MessageFactory.create_error_message(
-                session_id=session_data.session_id,
-                error_code="FRAME_BATCH_PROCESSING_ERROR",
-                error_message=f"프레임 배치 처리 실패: {str(e)}",
-            )
-            await session_data.websocket.send_text(error_msg.model_dump_json())
-
-    async def _process_frame_to_text_batch(
-        self, 
-        session_data: SessionData, 
-        keypoint_batch: List[List[float]], 
-        batch_index: int
-    ):
-        """F2T: 프레임→키포인트→텍스트 배치 처리"""
-        try:
-            predictions = []
-            
-            # 각 키포인트에 대해 예측 수행 (향후 최적화: 진짜 배치 처리)
-            for i, keypoints in enumerate(keypoint_batch):
-                if keypoints and len(keypoints) == 194:
-                    # 단일 프레임을 10프레임 시퀀스로 확장 (임시 처리)
-                    # TODO: 실제로는 10프레임 시퀀스가 모이면 배치 처리해야 함
-                    sequence = [keypoints] * 10  # 임시: 같은 프레임 10번 복제
-                    batch_array = np.array(sequence).reshape(1, 10, 194)
-                    
-                    # 모델 추론
-                    prediction_result = await model_manager.predict_async(batch_array)
-                    
-                    if prediction_result:
-                        predictions.append({
-                            "frame_index": i,
-                            "gloss": prediction_result["gloss"],
-                            "confidence": prediction_result["confidence"],
-                            "success": True
-                        })
-                        
-                        # 통계 업데이트
-                        session_data.update_stats(prediction_result["confidence"])
-                        
-                        # 고신뢰도 gloss 수집
-                        gloss_added = session_data.gloss_collector.add_gloss(
-                            prediction_result["gloss"], 
-                            prediction_result["confidence"]
-                        )
-                        
-                        if gloss_added:
-                            await self._send_gloss_status_update(session_data)
-                    else:
-                        predictions.append({
-                            "frame_index": i,
-                            "error": "모델 예측 실패",
-                            "success": False
-                        })
-
-            # 배치 예측 결과 전송
-            if predictions:
-                batch_result_msg = MessageFactory.create_batch_prediction_result(
-                    session_id=session_data.session_id,
-                    predictions=predictions,
-                    batch_index=batch_index,
-                    frames_processed=len(keypoint_batch)
-                )
-                await session_data.websocket.send_text(batch_result_msg.model_dump_json())
-
-            session_data.total_frames_processed += len(keypoint_batch)
-
-            logger.info(
-                f"🎯 F2T 배치 처리 완료: {len(predictions)}개 예측 (배치 #{batch_index})"
-            )
-
-        except Exception as e:
-            logger.error(f"F2T 배치 처리 오류: {e}")
-            error_msg = MessageFactory.create_error_message(
-                session_id=session_data.session_id,
-                error_code="F2T_BATCH_ERROR",
-                error_message=f"F2T 배치 처리 실패: {str(e)}",
             )
             await session_data.websocket.send_text(error_msg.model_dump_json())
 
@@ -610,11 +439,7 @@ class WebSocketHandler:
         """모든 세션 정리 (서버 종료 시)"""
         logger.info("🧹 모든 세션 정리 시작")
         await self.session_manager.cleanup_all_sessions()
-        
-        # FrameProcessor 리소스 정리
-        await frame_processor.cleanup()
-        
-        logger.info("✅ 모든 세션 및 F2T 리소스 정리 완료")
+        logger.info("✅ 모든 세션 정리 완료")
 
 
 # 전역 WebSocket 핸들러 인스턴스

@@ -9,13 +9,15 @@ class MessageType(str, Enum):
     """WebSocket 메시지 타입"""
 
     # client => server
-    KEYPOINTS = "keypoints"
-    TRANSLATION_START = "translation_start"
-    TRANSLATION_END = "translation_end"
+    KEYPOINTS = "keypoints"  # 개별 키포인트 (레거시)
+    FRAME_BATCH = "frame_batch"  # 10개 프레임 배치 전송 (NEW)
+    TRANSLATION_START = "start_translation"
+    TRANSLATION_END = "stop_translation"
     PING = "ping"
 
     # server => client
     PREDICTION_RESULT = "prediction_result"
+    BATCH_PREDICTION_RESULT = "batch_prediction_result"  # 배치 예측 결과 (NEW)
     TRANSLATION_RESULT = "translation_result"
     TRANSLATION_STATUS = "translation_status"
     ERROR = "error"
@@ -87,12 +89,32 @@ class PongMessage(BaseMessage):
 
 
 class KeypointDataMessage(BaseMessage):
-    """키포인트 데이터 메시지"""
+    """키포인트 데이터 메시지 (레거시)"""
 
     type: MessageType = MessageType.KEYPOINTS
     keypoints: List[float] = Field(..., description="194차원 키포인트 배열")
     frame_index: int = Field(..., description="프레임 순서")
     user_id: int = Field(..., description="사용자 ID")
+    session_id: str = Field(..., description="세션 ID")
+
+
+class FrameBatchMessage(BaseMessage):
+    """프레임 배치 메시지 (NEW)"""
+
+    type: MessageType = MessageType.FRAME_BATCH
+    frame_batch: List[str] = Field(..., description="10개 Base64 인코딩된 Canvas 프레임")
+    batch_index: int = Field(..., description="배치 순서")
+    user_id: int = Field(..., description="사용자 ID")
+    session_id: str = Field(..., description="세션 ID")
+
+
+class BatchPredictionResultMessage(BaseMessage):
+    """배치 예측 결과 메시지 (NEW)"""
+
+    type: MessageType = MessageType.BATCH_PREDICTION_RESULT
+    predictions: List[Dict[str, Any]] = Field(..., description="배치 예측 결과 리스트")
+    batch_index: int = Field(..., description="배치 순서")
+    frames_processed: int = Field(..., description="처리된 프레임 수")
     session_id: str = Field(..., description="세션 ID")
 
 
@@ -161,4 +183,19 @@ class MessageFactory:
             type=MessageType.PREDICTION_RESULT,
             session_id=session_id,
             data={"gloss": gloss, "confidence": confidence, "frame_count": frame_count},
+        )
+
+    @staticmethod
+    def create_batch_prediction_result(
+        session_id: str, 
+        predictions: List[Dict[str, Any]], 
+        batch_index: int, 
+        frames_processed: int
+    ) -> BatchPredictionResultMessage:
+        """배치 예측 결과 메시지 생성 (NEW)"""
+        return BatchPredictionResultMessage(
+            session_id=session_id,
+            predictions=predictions,
+            batch_index=batch_index,
+            frames_processed=frames_processed,
         )

@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     # 환경 구분
     environment: str = "development"
 
+    # F2T (Frame-to-Text) 서버 설정
+    enable_frame_processing: bool = True
+    frame_batch_size: int = 10
+    mediapipe_model_complexity: int = 1  # 0(lite), 1(full), 2(heavy)
+    frame_processing_threads: int = 2
+    frame_processing_timeout: int = 30  # seconds
+
     # Computed field로 backend_url 생성 (Pydantic v2 방식)
     @computed_field
     @property

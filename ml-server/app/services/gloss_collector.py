@@ -62,8 +62,8 @@ class GlossCollector:
         if not self.translation_active:
             return False
 
-        # 신뢰도 임계값 확인 0.85+
-        if confidence < 0.85:
+        # 신뢰도 임계값 확인 0.75+
+        if confidence < 0.75:
             return False
 
         # 중복 제거 (마지막 gloss와 같으면 무시)
