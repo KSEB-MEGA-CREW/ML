@@ -2,7 +2,7 @@
 import asyncio
 import json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 import numpy as np
 import time
