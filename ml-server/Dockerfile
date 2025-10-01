@@ -4,9 +4,10 @@ WORKDIR /app
 
 # 환경 변수 설정
 ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
-# 시스템 패키지 업데이트 및 필수 패키지 설치 (MediaPipe/OpenCV 지원)
+# 시스템 패키지 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
@@ -18,9 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     libgomp1 \
     libgtk-3-0 \
-    libavcodec58 \
-    libavformat58 \
-    libswscale5 \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
     ffmpeg \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
