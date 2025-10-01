@@ -27,10 +27,8 @@ class Settings(BaseSettings):
     ai_server_host: str = "0.0.0.0"
     ai_server_port: int = 8000
 
-    # 백엔드 연동 설정
-    backend_host: str = "localhost"
-    backend_port: str = "8080"
-    backend_protocol: str = "http"
+    # 백엔드 연동 설정 (ALB를 통한 통합 도메인 사용)
+    backend_url: str = "https://korean-signlanguage-sudam.com"  # ALB를 통한 통합 엔드포인트
     backend_token_verify_endpoint: str = "/api/auth/verify-token"
 
     # WebSocket 설정
@@ -64,11 +62,7 @@ class Settings(BaseSettings):
     frame_processing_threads: int = 2
     frame_processing_timeout: int = 30  # seconds
 
-    # Computed field로 backend_url 생성 (Pydantic v2 방식)
-    @computed_field
-    @property
-    def backend_url(self) -> str:
-        return f"{self.backend_protocol}://{self.backend_host}:{self.backend_port}"
+    # 이전 computed field는 제거됨 - backend_url을 직접 환경변수로 설정
 
 
 # 전역 설정 인스턴스

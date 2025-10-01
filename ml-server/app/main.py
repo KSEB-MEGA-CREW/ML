@@ -65,7 +65,7 @@ async def root():
         "message": "수어 인식 AI 서버",
         "version": "2.0.0",
         "status": "running",
-        "websocket_url": f"ws://{settings.ai_server_host}:{settings.ai_server_port}/ws",
+        "websocket_url": "wss://korean-signlanguage-sudam.com/ws",
     }
 
 
