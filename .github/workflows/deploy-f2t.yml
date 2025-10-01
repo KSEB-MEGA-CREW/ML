@@ -2,7 +2,7 @@ name: Deploy AI Server
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   workflow_dispatch:
 
 env:
@@ -46,7 +46,7 @@ jobs:
     - name: Upload models to ML server (if exists)
       run: |
         if [ -d "./models" ]; then
-          scp -r ./models ml-server:~/f2t-server/
+          scp -r ./models ml-server:~/ML/ml-server/
         fi
 
     - name: Deploy to ML Server
@@ -59,7 +59,8 @@ jobs:
         ssh ml-server << 'ENDSSH'
           set -e
           
-          cd ~/f2t-server
+          # 디렉토리 이동
+          cd ~/ML/ml-server
           
           # Git Pull
           git fetch origin
@@ -115,6 +116,9 @@ jobs:
           sed -i "s|\${CLOUDFRONT_DOMAIN}|${CLOUDFRONT_DOMAIN}|g" .env.prod
           sed -i "s|\${CLAUDE_API_KEY}|${CLAUDE_API_KEY}|g" .env.prod
           
+          # Ensure directories exist
+          mkdir -p models logs
+          
           # Stop existing containers
           docker compose -f docker-compose.prod.yml down || true
           
@@ -152,7 +156,7 @@ jobs:
 
     - name: Verify deployment
       run: |
-        ssh ml-server 'docker compose -f ~/f2t-server/docker-compose.prod.yml logs --tail=50'
+        ssh ml-server 'docker compose -f ~/ML/ml-server/docker-compose.prod.yml logs --tail=50'
 
     - name: Notify deployment result
       if: always()
