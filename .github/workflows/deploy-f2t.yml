@@ -78,7 +78,7 @@ jobs:
         CLOUDFRONT_DOMAIN: ${{ secrets.CLOUDFRONT_DOMAIN }}
         FRONTEND_DOMAIN: ${{ secrets.FRONTEND_DOMAIN }}
       run: |
-        ssh ml-server << 'ENDSSH'
+        ssh ml-server "bash -s" << ENDSSH
           set -e
           
           cd ~/ML/ml-server
@@ -111,15 +111,13 @@ jobs:
         EOF
           
           # Replace environment variables
-          sed -i "s|\${BACKEND_ALB_DNS}|${BACKEND_ALB_DNS}|g" .env.prod
-          sed -i "s|\${FRONTEND_DOMAIN}|${FRONTEND_DOMAIN}|g" .env.prod
-          sed -i "s|\${CLOUDFRONT_DOMAIN}|${CLOUDFRONT_DOMAIN}|g" .env.prod
-          sed -i "s|\${CLAUDE_API_KEY}|${CLAUDE_API_KEY}|g" .env.prod
+          sed -i "s|\\\${BACKEND_ALB_DNS}|${BACKEND_ALB_DNS}|g" .env.prod
+          sed -i "s|\\\${FRONTEND_DOMAIN}|${FRONTEND_DOMAIN}|g" .env.prod
+          sed -i "s|\\\${CLOUDFRONT_DOMAIN}|${CLOUDFRONT_DOMAIN}|g" .env.prod
+          sed -i "s|\\\${CLAUDE_API_KEY}|${CLAUDE_API_KEY}|g" .env.prod
           
           # Create docker-compose.prod.yml
           cat > docker-compose.prod.yml << 'EOFCOMPOSE'
-        version: '3.8'
-
         services:
           f2t-server:
             image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
@@ -191,12 +189,12 @@ jobs:
               echo "✅ Service is healthy!"
               break
             fi
-            if [ $i -eq 30 ]; then
+            if [ \$i -eq 30 ]; then
               echo "❌ Health check failed!"
               docker compose -f docker-compose.prod.yml logs
               exit 1
             fi
-            echo "Attempt $i/30..."
+            echo "Attempt \$i/30..."
             sleep 5
           done
           

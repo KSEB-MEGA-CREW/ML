@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   f2t-server:
-    build: .
+    image: ${DOCKER_IMAGE}:${TAG}  # build: . 대신 이미지 지정
     ports:
       - "8000:8000"
     volumes:
