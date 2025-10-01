@@ -34,7 +34,7 @@ jobs:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
-        cd ML/ml-server  # 실제 디렉토리 경로
+        cd ml-server
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
@@ -71,6 +71,7 @@ jobs:
     - name: Deploy to ML Server
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
         IMAGE_TAG: ${{ github.sha }}
         CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
         BACKEND_ALB_DNS: ${{ secrets.BACKEND_ALB_DNS }}
@@ -109,12 +110,13 @@ jobs:
         FRAME_PROCESSING_TIMEOUT=30
         EOF
           
+          # Replace environment variables
           sed -i "s|\${BACKEND_ALB_DNS}|${BACKEND_ALB_DNS}|g" .env.prod
           sed -i "s|\${FRONTEND_DOMAIN}|${FRONTEND_DOMAIN}|g" .env.prod
           sed -i "s|\${CLOUDFRONT_DOMAIN}|${CLOUDFRONT_DOMAIN}|g" .env.prod
           sed -i "s|\${CLAUDE_API_KEY}|${CLAUDE_API_KEY}|g" .env.prod
           
-          # Update docker-compose to use ECR image
+          # Create docker-compose.prod.yml
           cat > docker-compose.prod.yml << 'EOFCOMPOSE'
         version: '3.8'
 
@@ -165,23 +167,32 @@ jobs:
             driver: bridge
         EOFCOMPOSE
           
-          # ECR에서 이미지 Pull
+          # Set environment variables for docker-compose
           export ECR_REGISTRY=${ECR_REGISTRY}
           export ECR_REPOSITORY=${ECR_REPOSITORY}
           export IMAGE_TAG=${IMAGE_TAG}
           
+          # Ensure directories exist
+          mkdir -p models logs
+          
+          # Stop existing containers
           docker compose -f docker-compose.prod.yml down || true
+          
+          # Pull new image from ECR
           docker compose -f docker-compose.prod.yml pull
+          
+          # Start containers
           docker compose -f docker-compose.prod.yml up -d
           
+          # Wait for health check
           echo "Waiting for service to be healthy..."
           for i in {1..30}; do
             if curl -f http://localhost:8000/health > /dev/null 2>&1; then
-              echo "Service is healthy!"
+              echo "✅ Service is healthy!"
               break
             fi
             if [ $i -eq 30 ]; then
-              echo "Health check failed!"
+              echo "❌ Health check failed!"
               docker compose -f docker-compose.prod.yml logs
               exit 1
             fi
@@ -189,9 +200,24 @@ jobs:
             sleep 5
           done
           
+          # Show running containers
+          echo "=== Running Containers ==="
           docker compose -f docker-compose.prod.yml ps
+          
+          echo "=== Recent Logs ==="
+          docker compose -f docker-compose.prod.yml logs --tail=20
         ENDSSH
 
     - name: Verify deployment
       run: |
         ssh ml-server 'docker compose -f ~/ML/ml-server/docker-compose.prod.yml logs --tail=50'
+
+    - name: Notify deployment result
+      if: always()
+      run: |
+        if [ ${{ job.status }} == 'success' ]; then
+          echo "✅ AI Server deployment successful!"
+        else
+          echo "❌ AI Server deployment failed!"
+          exit 1
+        fi
