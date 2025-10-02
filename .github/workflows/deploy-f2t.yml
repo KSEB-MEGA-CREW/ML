@@ -95,7 +95,7 @@ jobs:
           LOG_LEVEL=DEBUG
           MODEL_PATH=./models/gesture_model.h5
           LABELS_PATH=./models/label_map.json
-          BACKEND_URL=https://${FRONTEND_DOMAIN}
+          BACKEND_URL=http://10.0.2.248:8080
           BACKEND_TOKEN_VERIFY_ENDPOINT=/api/auth/verify-token
           ALLOWED_ORIGINS=["https://${FRONTEND_DOMAIN}","https://${CLOUDFRONT_DOMAIN}"]
           CLAUDE_API_KEY=${CLAUDE_API_KEY}

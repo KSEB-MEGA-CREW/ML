@@ -27,8 +27,8 @@ class Settings(BaseSettings):
     ai_server_host: str = "0.0.0.0"
     ai_server_port: int = 8000
 
-    # 백엔드 연동 설정 (ALB를 통한 통합 도메인 사용)
-    backend_url: str = "https://korean-signlanguage-sudam.com"  # ALB를 통한 통합 엔드포인트
+    # 백엔드 연동 설정 (내부 네트워크 직접 연결)
+    backend_url: str = "http://10.0.2.248:8080"  # 백엔드 API 서버 직접 연결
     backend_token_verify_endpoint: str = "/api/auth/verify-token"
 
     # WebSocket 설정
