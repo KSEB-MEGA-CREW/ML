@@ -231,9 +231,13 @@ class WebSocketHandler:
             await self._handle_frame_batch(session_data, message_data)
 
         elif message_type in [MessageType.TRANSLATION_START, "start_translation"]:
+            logger.info(f"📩 번역 시작 메시지 수신: {message_type} (세션 {session_id[:8]})")
+            logger.debug(f"  > 전체 메시지 데이터: {message_data}")
             await self._handle_translation_start(session_data, message_data)
 
         elif message_type in [MessageType.TRANSLATION_END, "stop_translation"]:
+            logger.info(f"📩 번역 종료 메시지 수신: {message_type} (세션 {session_id[:8]})")
+            logger.debug(f"  > 전체 메시지 데이터: {message_data}")
             await self._handle_translation_end(session_data, message_data)
 
         elif message_type == MessageType.PING:
@@ -336,62 +340,89 @@ class WebSocketHandler:
         keypoint_batch: List[List[float]], 
         batch_index: int
     ):
-        """F2T: 프레임→키포인트→텍스트 배치 처리"""
+        """F2T: 프레임→키포인트→텍스트 배치 처리 (수정됨: 올바른 시퀀스 처리)"""
         try:
-            predictions = []
-            
-            # 각 키포인트에 대해 예측 수행 (향후 최적화: 진짜 배치 처리)
+            # 1단계: 키포인트 배치 검증 로직 강화
+            valid_keypoints = []
             for i, keypoints in enumerate(keypoint_batch):
                 if keypoints and len(keypoints) == 194:
-                    # 단일 프레임을 10프레임 시퀀스로 확장 (임시 처리)
-                    # TODO: 실제로는 10프레임 시퀀스가 모이면 배치 처리해야 함
-                    sequence = [keypoints] * 10  # 임시: 같은 프레임 10번 복제
-                    batch_array = np.array(sequence).reshape(1, 10, 194)
-                    
-                    # 모델 추론
-                    prediction_result = await model_manager.predict_async(batch_array)
-                    
-                    if prediction_result:
-                        predictions.append({
-                            "frame_index": i,
-                            "gloss": prediction_result["gloss"],
-                            "confidence": prediction_result["confidence"],
-                            "success": True
-                        })
-                        
-                        # 통계 업데이트
-                        session_data.update_stats(prediction_result["confidence"])
-                        
-                        # 고신뢰도 gloss 수집
-                        gloss_added = session_data.gloss_collector.add_gloss(
-                            prediction_result["gloss"], 
-                            prediction_result["confidence"]
-                        )
-                        
-                        if gloss_added:
-                            await self._send_gloss_status_update(session_data)
-                    else:
-                        predictions.append({
-                            "frame_index": i,
-                            "error": "모델 예측 실패",
-                            "success": False
-                        })
-
-            # 배치 예측 결과 전송
-            if predictions:
+                    valid_keypoints.append(keypoints)
+                else:
+                    logger.warning(f"프레임 {i}: 유효하지 않은 키포인트 (차원: {len(keypoints) if keypoints else 0})")
+            
+            # 정확히 10개 키포인트 확인
+            if len(valid_keypoints) != 10:
+                logger.warning(f"키포인트 배치 크기 불일치: {len(valid_keypoints)}/10개")
+                error_msg = MessageFactory.create_error_message(
+                    session_id=session_data.session_id,
+                    error_code="INCOMPLETE_KEYPOINT_BATCH",
+                    error_message=f"10개 키포인트가 필요하지만 {len(valid_keypoints)}개만 유효합니다.",
+                )
+                await session_data.websocket.send_text(error_msg.model_dump_json())
+                return
+            
+            # 2단계: 10개 키포인트를 시퀀스로 처리 (핵심 수정)
+            logger.info(f"🎬 10개 프레임 시퀀스 처리 시작 (배치 #{batch_index})")
+            
+            # 10개 키포인트를 하나의 시퀀스로 구성
+            sequence_array = np.array(valid_keypoints).reshape(1, 10, 194)
+            
+            # 단일 모델 추론 (10번 호출 → 1번 호출)
+            prediction_result = await model_manager.predict_async(sequence_array)
+            
+            if prediction_result:
+                # 통계 업데이트
+                session_data.update_stats(prediction_result["confidence"])
+                
+                # 고신뢰도 gloss 수집
+                gloss_added = session_data.gloss_collector.add_gloss(
+                    prediction_result["gloss"], 
+                    prediction_result["confidence"]
+                )
+                
+                if gloss_added:
+                    await self._send_gloss_status_update(session_data)
+                
+                # 3단계: 응답 메시지 구조 단순화
+                sequence_result = {
+                    "gloss": prediction_result["gloss"],
+                    "confidence": prediction_result["confidence"],
+                    "sequence_length": 10,
+                    "success": True
+                }
+                
+                # 단순화된 배치 결과 전송
                 batch_result_msg = MessageFactory.create_batch_prediction_result(
                     session_id=session_data.session_id,
-                    predictions=predictions,
+                    predictions=[sequence_result],  # 단일 시퀀스 결과
                     batch_index=batch_index,
-                    frames_processed=len(keypoint_batch)
+                    frames_processed=10
                 )
                 await session_data.websocket.send_text(batch_result_msg.model_dump_json())
-
-            session_data.total_frames_processed += len(keypoint_batch)
-
-            logger.info(
-                f"🎯 F2T 배치 처리 완료: {len(predictions)}개 예측 (배치 #{batch_index})"
-            )
+                
+                session_data.total_frames_processed += 10
+                
+                # 4단계: 로그 메시지 및 디버깅 정보 업데이트
+                logger.info(
+                    f"✅ 10프레임 시퀀스 처리 완료: '{prediction_result['gloss']}' "
+                    f"(신뢰도: {prediction_result['confidence']:.3f}, 배치 #{batch_index})"
+                )
+                
+            else:
+                logger.error(f"시퀀스 모델 추론 실패 (배치 #{batch_index})")
+                error_result = {
+                    "error": "시퀀스 모델 예측 실패", 
+                    "success": False,
+                    "sequence_length": 10
+                }
+                
+                batch_result_msg = MessageFactory.create_batch_prediction_result(
+                    session_id=session_data.session_id,
+                    predictions=[error_result],
+                    batch_index=batch_index,
+                    frames_processed=10
+                )
+                await session_data.websocket.send_text(batch_result_msg.model_dump_json())
 
         except Exception as e:
             logger.error(f"F2T 배치 처리 오류: {e}")
@@ -459,7 +490,14 @@ class WebSocketHandler:
     ):
         """번역 시작 처리"""
         try:
+            logger.info(f"🔵 번역 시작 처리 진입 (세션 {session_data.session_id[:8]})")
+            
             translation_msg = TranslationStartMessage(**message_data)
+            logger.debug(f"✅ TranslationStartMessage 파싱 성공: {translation_msg}")
+
+            # 현재 번역 상태 확인
+            was_active = session_data.gloss_collector.is_translation_active()
+            logger.info(f"📊 번역 시작 전 상태: active={was_active}, user_id={session_data.user_id}")
 
             # 번역 시작
             session_data.gloss_collector.start_translation()
@@ -468,6 +506,8 @@ class WebSocketHandler:
             session_data.frame_buffer.clear()
             session_data.frame_count = 0
             session_data.is_active = True
+            
+            logger.info(f"🔄 세션 상태 초기화 완료: frame_buffer cleared, is_active=True")
 
             # 시작 확인 메시지 전송
             status_msg = MessageFactory.create_translation_status(
@@ -477,28 +517,45 @@ class WebSocketHandler:
                 gloss_count=0,
             )
             await session_data.websocket.send_text(status_msg.model_dump_json())
+            logger.info(f"📤 번역 시작 확인 메시지 전송 완료")
 
             logger.info(
-                f"✅ 번역 시작: {session_data.session_id[:8]} (사용자: {session_data.user_id})"
+                f"✅ 번역 시작 완료: {session_data.session_id[:8]} (사용자: {session_data.user_id})"
             )
 
         except Exception as e:
-            logger.error(f"번역 시작 처리 오류: {e}")
+            logger.error(f"❌ 번역 시작 처리 오류: {e}")
+            import traceback
+            logger.error(f"상세 오류: {traceback.format_exc()}")
 
     async def _handle_translation_end(
         self, session_data: SessionData, message_data: Dict[str, Any]
     ):
         """번역 종료 처리"""
         try:
+            logger.info(f"🔴 번역 종료 처리 진입 (세션 {session_data.session_id[:8]})")
+            
             translation_msg = TranslationEndMessage(**message_data)
+            logger.debug(f"✅ TranslationEndMessage 파싱 성공: {translation_msg}")
+
+            # 현재 상태 확인
+            was_active = session_data.gloss_collector.is_translation_active()
+            collected_glosses = session_data.gloss_collector.get_collected_glosses()
+            gloss_count = session_data.gloss_collector.get_gloss_count()
+            
+            logger.info(f"📊 번역 종료 전 상태: active={was_active}, gloss_count={gloss_count}")
+            logger.info(f"📝 수집된 Gloss: {collected_glosses}")
 
             # 번역 종료 및 번역 수행 여부 확인
             should_translate = session_data.gloss_collector.stop_translation()
+            logger.info(f"🔍 번역 수행 여부: {should_translate}")
 
             if should_translate:
+                logger.info(f"🔄 Claude 번역 실행 시작 (Gloss: {collected_glosses})")
                 # 수집된 gloss로 번역 수행
                 await self._generate_translation(session_data, "user_end")
             else:
+                logger.warning(f"⚠️ 번역할 Gloss 없음 - 빈 결과 응답")
                 # 수집된 gloss가 없음
                 status_msg = MessageFactory.create_translation_status(
                     session_id=session_data.session_id,
@@ -507,16 +564,20 @@ class WebSocketHandler:
                     gloss_count=0,
                 )
                 await session_data.websocket.send_text(status_msg.model_dump_json())
+                logger.info(f"📤 빈 결과 메시지 전송 완료")
 
             # 세션 상태 업데이트
             session_data.is_active = False
+            logger.info(f"🔄 세션 상태 업데이트: is_active=False")
 
             logger.info(
-                f"🔴 번역 종료: {session_data.session_id[:8]} (번역 수행: {should_translate})"
+                f"✅ 번역 종료 완료: {session_data.session_id[:8]} (번역 수행: {should_translate})"
             )
 
         except Exception as e:
-            logger.error(f"번역 종료 처리 오류: {e}")
+            logger.error(f"❌ 번역 종료 처리 오류: {e}")
+            import traceback
+            logger.error(f"상세 오류: {traceback.format_exc()}")
 
     async def _generate_translation(
         self, session_data: SessionData, trigger: str = "user_end"
