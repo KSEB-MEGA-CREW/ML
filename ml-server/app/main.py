@@ -11,9 +11,10 @@ from app.websockets.handlers import websocket_handler
 from app.core.config import settings
 from app.models.model_manager import model_manager
 
-# 로깅 설정
+# 로깅 설정 (환경변수 기반)
+log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -103,5 +104,5 @@ if __name__ == "__main__":
         host=settings.ai_server_host,
         port=settings.ai_server_port,
         reload=True,
-        log_level="info",
+        log_level=settings.log_level.lower(),
     )
