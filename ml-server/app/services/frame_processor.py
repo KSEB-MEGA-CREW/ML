@@ -5,8 +5,6 @@ import numpy as np
 import mediapipe as mp
 import logging
 from typing import List, Optional, Dict, Any
-from PIL import Image
-import io
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
@@ -82,7 +80,10 @@ class FrameProcessor:
 
     def _extract_keypoints_from_frame(self, base64_frame: str) -> Optional[List[float]]:
         """
-        단일 프레임에서 키포인트 추출
+        단일 프레임에서 키포인트 추출 (최적화됨)
+        
+        성능 개선: Base64 → PIL → OpenCV → RGB (기존)
+                  Base64 → OpenCV → RGB (개선) - 중간 단계 제거
         
         Args:
             base64_frame: Base64 인코딩된 이미지 프레임
@@ -94,13 +95,15 @@ class FrameProcessor:
             # Base64 디코딩
             image_data = base64.b64decode(base64_frame.split(',')[-1])  # data:image/jpeg;base64, 제거
             
-            # PIL Image로 변환
-            pil_image = Image.open(io.BytesIO(image_data))
+            # OpenCV로 직접 디코딩 (성능 최적화)
+            nparr = np.frombuffer(image_data, np.uint8)
+            cv_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)  # BGR 형태로 직접 로드
             
-            # OpenCV 형식으로 변환 (RGB)
-            cv_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+            if cv_image is None:
+                logger.error("OpenCV 이미지 디코딩 실패")
+                return None
             
-            # MediaPipe 처리
+            # MediaPipe 처리용 RGB 변환 (1회만)
             rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
             results = self.holistic.process(rgb_image)
             
@@ -110,7 +113,7 @@ class FrameProcessor:
             if keypoints and len(keypoints) == 194:
                 return keypoints
             else:
-                logger.warning("키포인트 추출 실패 또는 차원 불일치")
+                logger.debug(f"키포인트 추출 실패 또는 차원 불일치: {len(keypoints) if keypoints else 0}차원")
                 return None
                 
         except Exception as e:
